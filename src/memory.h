@@ -110,8 +110,9 @@ typedef struct {
   float recall_blend_substring; /* substring weight (default 0.5) */
   float vscore_exponent;        /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
   float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3) */
-  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.08) */
-  float vscore_halflife;         /* vscore evidence half-life in days (default 90.0, 0=disabled) */
+  float memory_halflife;         /* unified temporal decay half-life in days (default 90.0, 0=disabled).
+                                  * Controls evidence decay, recency bonus time scale, and
+                                  * validity class decay rates (all derived from this single value). */
   float failure_bias;            /* scoring boost for failure-derived memories (default 1.3, 1.0=disabled).
                                   * Meta^n WS1: anti-pattern: keys get bias*1.1, lesson: keys get bias*0.9.
                                   * Entries with outcome=FAILURE get at least this multiplier. */
@@ -222,8 +223,8 @@ void memory_free(memory_t *m);
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus, float failure_bias,
-                              float vscore_halflife);
+                              float failure_bias,
+                              float memory_halflife);
 int memory_set_outcome(memory_t *m, const char *key, int outcome);
 
 /* Set executable code snippet on a memory entry.

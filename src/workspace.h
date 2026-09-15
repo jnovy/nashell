@@ -43,8 +43,8 @@ int workspace_init_embeddings(workspace_t *ws, const char *type,
 void workspace_set_recall_config(workspace_t *ws, double min_score,
                                  float blend_semantic, float blend_substring,
                                  float vscore_exp, float superseded_demotion,
-                                 float recency_bonus, float failure_bias,
-                                 float vscore_halflife);
+                                 float failure_bias,
+                                 float memory_halflife);
 
 /* Recall: search workspace memory first, then merge global results
  * (with global_weight discount). Returns unified sorted results.

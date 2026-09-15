@@ -141,7 +141,7 @@ static void test_query_min_score_filtering(void) {
                0, NULL, NULL, 0, NULL, 0);
 
   /* With very high min_score, only strong matches survive */
-  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
+  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0, 0.3f, 1.3f, 90.0f);
   memory_results_t r = memory_query(m, "exact-match", 10);
   /* Only the key-matching entry should survive 0.70 threshold */
   ASSERT_EQ(r.count, 1);
@@ -160,7 +160,7 @@ static void test_query_ref_boost(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
   /* Use low min_score so weak matches survive */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 1.3f, 90.0f);
 
   /* Entry A: key matches "boost" → score = 0.75 (above 0.5 trigger).
      * Refs entry B. */
@@ -198,7 +198,7 @@ static void test_query_vscore_influence(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* Enable vscore with exponent 1.0 (full influence) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f, 90.0f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0, 0.3f, 1.3f, 90.0f);
 
   /* Both entries match equally on substring */
   memory_store(m, "lesson:proven-method", "how to fix bugs in code", 0, NULL, NULL, 0, NULL, 0);
@@ -234,7 +234,7 @@ static void test_query_vscore_disabled(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* vscore disabled (exponent = 0) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 1.3f, 90.0f);
 
   memory_store(m, "lesson:method-a", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:method-b", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
@@ -482,7 +482,7 @@ static void test_increment_nonexistent(void) {
 static void test_vscore_calculation(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f, 90.0f);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0, 0.3f, 1.3f, 90.0f);
 
   memory_store(m, "lesson:good-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:bad-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
@@ -773,13 +773,13 @@ static mem_index_entry_t *find_index_entry(memory_t *m, const char *key) {
   return NULL;
 }
 
-/* T1: Recent entry scores higher than old entry when recency_bonus > 0 */
-static void test_temporal_recency_bonus(void) {
+/* T1: Recent entry scores higher than old entry when memory_halflife > 0 */
+static void test_temporal_recency(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  /* vscore_exp=0 disables vscore influence; recency_bonus=0.08;
+  /* vscore_exp=0 disables vscore influence; memory_halflife=90;
    * failure_bias=1.0 disables failure boost; halflife irrelevant here */
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.08f, 1.0f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 1.0f, 90.0f);
 
   memory_store(m, "lesson:recent-tip", "optimize build speed", 0,
                NULL, NULL, 0, NULL, 0);
@@ -805,8 +805,8 @@ static void test_temporal_recency_bonus(void) {
 static void test_temporal_validity_volatile(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  /* vscore_exp=0, recency_bonus=0 so only validity scoring matters */
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+  /* vscore_exp=0, memory_halflife=0 so only validity scoring matters */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 1.0f, 90.0f);
 
   memory_store(m, "lesson:volatile-entry", "cache server port", 0,
                NULL, NULL, 0, NULL, 0);
@@ -840,7 +840,7 @@ static void test_temporal_validity_volatile(void) {
 static void test_temporal_validity_expires_when(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 1.0f, 90.0f);
 
   memory_store(m, "lesson:vol-entry", "api endpoint config", 0,
                NULL, NULL, 0, NULL, 0);
@@ -877,8 +877,8 @@ static void test_temporal_vscore_decay(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
   /* vscore_exp=1.0 so vscore fully influences scoring;
-   * recency_bonus=0 to isolate vscore effect; halflife=90 days */
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 0.0f, 1.0f, 90.0f);
+   * memory_halflife=0 to isolate vscore effect; halflife=90 days */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 1.0f, 90.0f);
 
   memory_store(m, "lesson:many-old-hits", "deploy to staging", 0,
                NULL, NULL, 0, NULL, 0);
@@ -908,11 +908,11 @@ static void test_temporal_vscore_decay(void) {
 }
 
 /* T5: With halflife=0, temporal decay is disabled; old hits count fully */
-static void test_temporal_vscore_halflife_zero(void) {
+static void test_temporal_halflife_zero(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  /* halflife=0 disables decay */
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+  /* memory_halflife=0 disables all temporal decay */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 1.0f, 0.0f);
 
   memory_store(m, "lesson:many-old", "run test suite", 0,
                NULL, NULL, 0, NULL, 0);
@@ -943,8 +943,8 @@ static void test_temporal_vscore_halflife_zero(void) {
 static void test_temporal_last_accessed_recency(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  /* recency_bonus=0.08 so recency matters; vscore_exp=0 to isolate */
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.08f, 1.0f, 0.0f);
+  /* memory_halflife=90 so recency matters; vscore_exp=0 to isolate */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 1.0f, 90.0f);
 
   memory_store(m, "lesson:accessed-recent", "handle error codes", 0,
                NULL, NULL, 0, NULL, 0);
@@ -1098,11 +1098,11 @@ int main(void) {
   RUN_TEST(test_update_scores_zero);
 
   /* Section 9: temporal scoring */
-  RUN_TEST(test_temporal_recency_bonus);
+  RUN_TEST(test_temporal_recency);
   RUN_TEST(test_temporal_validity_volatile);
   RUN_TEST(test_temporal_validity_expires_when);
   RUN_TEST(test_temporal_vscore_decay);
-  RUN_TEST(test_temporal_vscore_halflife_zero);
+  RUN_TEST(test_temporal_halflife_zero);
   RUN_TEST(test_temporal_last_accessed_recency);
   RUN_TEST(test_temporal_increment_sets_timestamp);
   RUN_TEST(test_temporal_update_scores_sets_timestamp);

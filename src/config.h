@@ -143,8 +143,7 @@ typedef struct {
   float recall_blend_substring;   /* 0.0 = inherit */
   float vscore_exponent;          /* -2.0 = inherit (since -1.0 and 0.0 are valid values) */
   float superseded_demotion;      /* -2.0 = inherit. Multiplicative penalty for superseded entries */
-  float recency_bonus;            /* -2.0 = inherit. Soft temporal bonus for recent entries */
-  float vscore_halflife;          /* -2.0 = inherit. vscore evidence half-life in days (0=disabled) */
+  float memory_halflife;          /* -2.0 = inherit. Unified temporal decay half-life in days (0=disabled) */
   int tool_retry_limit;           /* 0 = inherit */
   int cycling_detection;          /* -1 = inherit */
   int max_reflection_steps;       /* 0 = inherit */
@@ -260,8 +259,8 @@ typedef struct {
                                     * get ×0.81 instead of ×0.50, while still penalizing memories
                                     * with actual misses (vscore=0.33 → ×0.72). */
   float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3). */
-  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.08). */
-  float vscore_halflife;        /* vscore evidence half-life in days (default 90.0, 0=disabled). */
+  float memory_halflife;        /* unified temporal decay half-life in days (default 90.0, 0=disabled).
+                                 * Controls evidence decay, recency bonus, and validity class decay. */
   float failure_bias;           /* scoring boost for failure-derived memories (default 1.3). 1.0 = disabled. */
 
   int tool_retry_limit;         /* max consecutive errors on same tool before forced strategy switch (default 3) */

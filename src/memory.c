@@ -471,8 +471,7 @@ memory_t *memory_new(const char *project_root) {
   m->recall_blend_substring = 0.5f;
   m->vscore_exponent = 0.3f;
   m->superseded_demotion = 0.3f;
-  m->recency_bonus = 0.08f;
-  m->vscore_halflife = 90.0f;
+  m->memory_halflife = 90.0f;
 
   /* Recursive mutex: memory_prune() → memory_delete_batch() nesting. */
   {
@@ -523,8 +522,8 @@ void memory_free(memory_t *m) {
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus, float failure_bias,
-                              float vscore_halflife) {
+                              float failure_bias,
+                              float memory_halflife) {
   if (!m) return;
   /* FIX BUG-22: Acquire mutex so these writes are atomic with respect to
      * memory_query() which reads these fields under the same lock. */
@@ -534,9 +533,8 @@ void memory_set_recall_config(memory_t *m, double min_score,
   m->recall_blend_substring = blend_substring;
   m->vscore_exponent = vscore_exp;
   m->superseded_demotion = superseded_demotion;
-  m->recency_bonus = recency_bonus;
   m->failure_bias = failure_bias;
-  m->vscore_halflife = vscore_halflife;
+  m->memory_halflife = memory_halflife;
   pthread_mutex_unlock(&m->mtx);
 }
 
@@ -1151,12 +1149,11 @@ static double score_entry_hybrid(const char *key, const char *value,
                                  float vscore_exponent,
                                  double superseded_at, double created_at,
                                  float superseded_demotion,
-                                 float recency_bonus,
                                  float failure_bias, int outcome,
                                  const char *validity,
                                  double last_hit_at, double last_miss_at,
                                  double last_accessed,
-                                 float vscore_halflife,
+                                 float memory_halflife,
                                  double *out_relevance,
                                  double *out_importance) {
   double relevance;
@@ -1272,23 +1269,31 @@ static double score_entry_hybrid(const char *key, const char *value,
      * Previously validity was display-only (staleness markers in context).
      * Now volatile entries get a freshness-dependent penalty because stale
      * volatile data is likely outdated. expires_when gets a milder penalty.
-     * Persistent entries (default) are unaffected. */
-  if (validity && created_at > 0.0) {
+     * Persistent entries (default) are unaffected.
+     *
+     * All validity decay time constants are derived from memory_halflife:
+     *   volatile:     hl/6   (15d at default 90)
+     *   expires_when: hl/1.5 (60d at default 90)
+     *   session:      hl/90  (1d at default 90)
+     * This lets a single knob control all temporal behavior. */
+  if (validity && created_at > 0.0 && memory_halflife > 0.0f) {
+    double hl = (double)memory_halflife;
     double age_days = (epoch_now() - created_at) / 86400.0;
     if (age_days < 0) age_days = 0;
     if (strcmp(validity, "volatile") == 0) {
-      /* Volatile: 2-week half-life, range [0.5, 1.0] */
-      double freshness = exp(-age_days / 14.0);
+      /* Volatile: hl/6 decay (15d at default), range [0.5, 1.0] */
+      double freshness = exp(-age_days / (hl / 6.0));
       composite *= 0.5 + 0.5 * freshness;
     } else if (strncmp(validity, "expires_when:", 13) == 0) {
-      /* Conditional expiry: 2-month half-life, range [0.7, 1.0] */
-      double freshness = exp(-age_days / 60.0);
+      /* Conditional expiry: hl/1.5 decay (60d at default), range [0.7, 1.0] */
+      double freshness = exp(-age_days / (hl / 1.5));
       composite *= 0.7 + 0.3 * freshness;
     }
     /* "session" validity entries should have been cleaned up already,
      * but if present, treat like volatile with harsh penalty */
     else if (strcmp(validity, "session") == 0) {
-      double freshness = exp(-age_days / 1.0);
+      /* Session: hl/90 decay (1d at default), range [0.3, 1.0] */
+      double freshness = exp(-age_days / (hl / 90.0));
       composite *= 0.3 + 0.7 * freshness;
     }
   }
@@ -1296,19 +1301,19 @@ static double score_entry_hybrid(const char *key, const char *value,
   /* Soft temporal bonus for recently-active entries.
      * Uses the most recent activity timestamp (last_accessed or created_at)
      * to give recently-used memories a mild tiebreaker advantage.
-     * Default recency_bonus=0.08 (8% boost for brand-new entries).
+     * Amplitude is hardcoded at 0.08 (8% max boost - just a tiebreaker).
+     * Time scale is derived from memory_halflife for unified control.
      *
-     * Formula: composite *= 1.0 + bonus * exp(-age_days / 30.0)
-     * At age=0:  multiplier = 1.08 (8% boost)
-     * At age=30: multiplier ~= 1.03 (3% boost)
-     * At age=90: multiplier ~= 1.0 (essentially no boost) */
-  if (recency_bonus > 0.0f && created_at > 0.0) {
+     * Formula: composite *= 1.0 + 0.08 * exp(-age_days * ln2 / halflife)
+     * At default hl=90: age=0 -> 1.08, age=90 -> 1.04, age=180 -> 1.02 */
+  if (memory_halflife > 0.0f && created_at > 0.0) {
     /* P3: Use most recent activity, not just creation time */
     double ref_time = created_at;
     if (last_accessed > ref_time) ref_time = last_accessed;
     double age_days = (epoch_now() - ref_time) / 86400.0;
     if (age_days < 0) age_days = 0;
-    composite *= 1.0 + (double)recency_bonus * exp(-age_days / 30.0);
+    double ln2 = 0.693147180559945;
+    composite *= 1.0 + 0.08 * exp(-age_days * ln2 / (double)memory_halflife);
   }
 
   /* P3: Bayesian validation scoring — data-driven memory quality signal.
@@ -1349,17 +1354,18 @@ static double score_entry_hybrid(const char *key, const char *value,
      *   a new memory (rel=0.40, vs=0.50 → 0.20) despite lower relevance.
      *   With exponent=0.3, new memory wins (0.40×0.81=0.32 vs 0.25×0.99=0.25). */
   /* P1: Time-weighted Bayesian validation score.
-     * When vscore_halflife > 0 and we have timestamps, decay old evidence
+     * When memory_halflife > 0 and we have timestamps, decay old evidence
      * so recent hits/misses count more than old ones. This handles the
      * "was good before, bad now" case - a memory with 10 old hits but
      * 3 recent misses will see its effective vscore drop because old hits
      * decay while recent misses remain at full weight.
      *
-     * Half-life of 90 days means evidence from 90 days ago counts at 50%,
+     * Uses memory_halflife directly as the evidence decay half-life.
+     * 90 days means evidence from 90 days ago counts at 50%,
      * from 180 days ago at 25%, etc. With no timestamps (legacy data),
      * falls back to the flat Beta posterior. */
   double vscore;
-  if (vscore_halflife > 0.0f &&
+  if (memory_halflife > 0.0f &&
       (recall_hits > 0 || recall_misses > 0) &&
       (last_hit_at > 0.0 || last_miss_at > 0.0)) {
     double now = epoch_now();
@@ -1369,12 +1375,12 @@ static double score_entry_hybrid(const char *key, const char *value,
     if (last_hit_at > 0.0 && recall_hits > 0) {
       double age = (now - last_hit_at) / 86400.0;
       if (age < 0) age = 0;
-      eff_hits *= exp(-age * ln2 / (double)vscore_halflife);
+      eff_hits *= exp(-age * ln2 / (double)memory_halflife);
     }
     if (last_miss_at > 0.0 && recall_misses > 0) {
       double age = (now - last_miss_at) / 86400.0;
       if (age < 0) age = 0;
-      eff_misses *= exp(-age * ln2 / (double)vscore_halflife);
+      eff_misses *= exp(-age * ln2 / (double)memory_halflife);
     }
     vscore = (eff_hits + 1.0) / (eff_hits + eff_misses + 2.0);
   } else {
@@ -1551,12 +1557,11 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                                   m->vscore_exponent,
                                   ie->superseded_at, ie->created_at,
                                   m->superseded_demotion,
-                                  m->recency_bonus,
                                   m->failure_bias, ie->outcome,
                                   ie->validity,
                                   ie->last_hit_at, ie->last_miss_at,
                                   ie->last_accessed,
-                                  m->vscore_halflife,
+                                  m->memory_halflife,
                                   &out_rel, &out_imp);
 
     /* Type filtering */
