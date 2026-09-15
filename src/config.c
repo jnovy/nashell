@@ -75,9 +75,9 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->file_read_max_inline <= 0) cfg->file_read_max_inline = 50000;
   if (cfg->file_read_context_pct <= 0) cfg->file_read_context_pct = 10;
   /* Lewis half-life working view defaults.
-   * view_enabled: -1 or 0 (unset) -> 1 (on by default).
-   * User can disable via view_enabled = false in config. */
-  if (cfg->view_enabled <= 0) cfg->view_enabled = 1;
+   * view_enabled: -1 (unset) -> 1 (on by default).
+   * User can explicitly disable via view_enabled = false (0) in config. */
+  if (cfg->view_enabled < 0) cfg->view_enabled = 1;
   if (cfg->view_keep_full <= 0) cfg->view_keep_full = 4;
   if (cfg->view_base_cap <= 0) cfg->view_base_cap = 4000;
   if (cfg->view_min_cap <= 0) cfg->view_min_cap = 200;
@@ -206,7 +206,9 @@ void config_set_defaults(config_t *cfg) {
   if (cfg->belief_entropy.warn_threshold < 0)
     cfg->belief_entropy.warn_threshold = 0.15f;
 
-  cfg->stream = 1; /* always on for now */
+  /* Stream defaults to on; user can disable via stream = false in config.
+   * Uses -1 sentinel so 0 (user-disabled) is preserved. */
+  if (cfg->stream < 0) cfg->stream = 1;
 
   /* [thinking] defaults — always-on is the default mode.
      * budget uses INT_MIN as sentinel (0=no-thinking and -1=unrestricted are both valid). */
@@ -284,6 +286,7 @@ config_t *config_load(const char *path) {
   cfg->grep_timeout = -1;
   cfg->grep_max_matches = -1;
   cfg->web_timeout = -1;
+  cfg->stream = -1; /* sentinel: 0=user-disabled, 1=enabled, -1=unset */
   /* Thinking config sentinel: budget uses INT_MIN since 0 means
      * "no thinking tokens" (valid) and -1 means "unrestricted" (also valid). */
   cfg->thinking.budget = INT_MIN;

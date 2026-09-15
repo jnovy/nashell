@@ -299,8 +299,8 @@ static cJSON *convert_to_anthropic(provider_t *p, llm_chat_t *chat) {
       cJSON_AddStringToObject(tr, "content",
                               (content && content[0]) ? content : "(empty)");
 
-      /* Check if error */
-      if (content && strncmp(content, "ERROR", 5) == 0) {
+      /* Check if error — use structured msg_type instead of brittle prefix match */
+      if (chat->msgs[i].msg_type == LLM_MSG_ERROR) {
         cJSON_AddBoolToObject(tr, "is_error", 1);
       }
 

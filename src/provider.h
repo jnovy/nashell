@@ -102,6 +102,9 @@ struct provider {
   /* ── Tool filter (set by caller before provider_complete) ── */
   const struct tool_filter_t *tool_filter; /* NULL = all tools */
 
+  /* ── Per-call max_tokens override (0 = use cfg.max_tokens) ── */
+  int max_tokens_override;
+
   /* ── Abort flag for interruptible retry sleeps ── */
   _Atomic int abort_retry; /* set to 1 to cancel retry sleep early */
 

@@ -352,7 +352,8 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
 
       int n_evict = react_emergency_evict_and_reinject(ctx, chat);
       if (n_evict > 0) {
-        (*consecutive_null)++;
+        /* Note: caller already incremented *consecutive_null before
+         * calling us, so we must NOT increment again here. */
         return 0;
       } else {
         ev.message = "Max-token exhaustion - no evictable messages "

@@ -334,7 +334,8 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_error("failed to build request JSON");
   }
 
-  /* Get endpoint and headers */
+  /* Get endpoint and headers - ensure non-streaming endpoint for image analysis */
+  p->_requesting_stream = 0;
   const char *endpoint = p->get_endpoint ? p->get_endpoint(p) : NULL;
   if (!endpoint) {
     free(req_body);
@@ -343,6 +344,11 @@ tool_result_t tool_image_analyze(tool_ctx_t *ctx, cJSON *params) {
   }
 
   struct curl_slist *headers = p->build_headers ? p->build_headers(p) : NULL;
+  if (!headers) {
+    free(req_body);
+    free(resolved);
+    return tools_make_error("failed to build auth headers (no API key configured?)");
+  }
 
   /* Make the API call */
   str_t response = str_new(4096);

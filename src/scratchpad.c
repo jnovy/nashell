@@ -53,9 +53,11 @@ void scratchpad_move(scratchpad_t *dst, scratchpad_t *src) {
   dst->count = src->count;
   dst->cap = src->cap;
   /* dst->mtx is preserved (not destroyed/re-initialized) */
-  /* Destroy src's mutex properly before zeroing */
+  /* Destroy src's mutex properly before zeroing, then re-init
+   * so src remains in a valid (empty) state after the move. */
   pthread_mutex_destroy(&src->mtx);
   memset(src, 0, sizeof(*src));
+  pthread_mutex_init(&src->mtx, NULL);
 }
 
 /* Ensure capacity for at least one more section. */
@@ -644,7 +646,9 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
     /* No section headers — store as single fallback section.
          * FIX BUG#4: use scratchpad_reset() instead of scratchpad_free()
          * to avoid destroying the mutex before scratchpad_write() locks it. */
+    pthread_mutex_lock(&sp->mtx);
     scratchpad_reset(sp);
+    pthread_mutex_unlock(&sp->mtx);
     scratchpad_write(sp, fallback_name ? fallback_name : "pruned",
                      text, default_priority);
     return 0;
@@ -652,7 +656,9 @@ int scratchpad_parse(scratchpad_t *sp, const char *text,
 
   /* Parse structured content into sections.
      * FIX BUG#4: use scratchpad_reset() to preserve the mutex. */
+  pthread_mutex_lock(&sp->mtx);
   scratchpad_reset(sp);
+  pthread_mutex_unlock(&sp->mtx);
   int count = 0;
   const char *p = first_hdr;
 
@@ -765,6 +771,7 @@ void scratchpad_check_staleness(scratchpad_t *sp, const char *path) {
     if (s->n_tracked == 0) continue;
     for (int j = 0; j < s->n_tracked; j++) {
       const char *tp = s->tracked_paths[j];
+      if (!tp) continue;
       while (tp[0] == '.' && tp[1] == '/') tp += 2;
       if (strcmp(tp, path) == 0) {
         to_clear[n_clear++] = xstrdup(s->name);

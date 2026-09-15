@@ -10,6 +10,7 @@
  * (SIGSEGV/SIGABRT/SIGBUS) can write a signal_death entry to the active
  * journal using only async-signal-safe I/O.  Defined in journal.c. */
 extern char g_crash_journal_path[512];
+extern char g_crash_log_path[512]; /* pre-cached ~/.nash/crash.log path for signal handler */
 extern volatile sig_atomic_t g_crash_react_loop;
 extern volatile sig_atomic_t g_crash_step;
 

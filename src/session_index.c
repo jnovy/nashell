@@ -146,6 +146,7 @@ int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
   if (!d) return 0; /* directory doesn't exist — not an error */
 
   int added = 0;
+  pthread_mutex_lock(&idx->mtx);
   struct dirent *ent;
   while ((ent = readdir(d)) != NULL) {
     if (ent->d_name[0] == '.') continue;
@@ -213,6 +214,7 @@ int session_index_load_dir(session_index_t *idx, const char *sessions_dir) {
     idx->count++;
     added++;
   }
+  pthread_mutex_unlock(&idx->mtx);
   closedir(d);
   return added;
 }

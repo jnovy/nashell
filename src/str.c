@@ -20,12 +20,7 @@
 str_t str_new(size_t initial_cap) {
   str_t s;
   s.cap = initial_cap > 0 ? initial_cap : 64;
-  s.data = malloc(s.cap);
-  if (!s.data) {
-    s.len = 0;
-    s.cap = 0;
-    return s;
-  }
+  s.data = xmalloc(s.cap);
   s.len = 0;
   s.data[0] = '\0';
   return s;
@@ -374,6 +369,13 @@ int mkdir_p(const char *path, mode_t mode) {
 /* Return sessions base directory, workspace-aware. */
 char *sessions_base_dir(const char *nash_dir, const char *workspace) {
   char buf[1024];
+  if (workspace && workspace[0]) {
+    /* Sanitize workspace name to prevent path traversal */
+    if (strstr(workspace, "..") || strchr(workspace, '/') || strchr(workspace, '\\')) {
+      /* Fall back to default sessions dir on suspicious name */
+      workspace = NULL;
+    }
+  }
   if (workspace && workspace[0]) {
     snprintf(buf, sizeof(buf), "%s/workspaces/%s", nash_dir, workspace);
     mkdir(buf, 0755); /* ensure workspace dir exists */
@@ -801,9 +803,10 @@ int jsonl_iterate(const char *path,
   FILE *fp = fopen(path, "r");
   if (!fp) return -1;
 
-  char line[65536];
+  char *line = NULL;
+  size_t line_cap = 0;
   int count = 0;
-  while (fgets(line, sizeof(line), fp)) {
+  while (getline(&line, &line_cap, fp) != -1) {
     /* Skip blank lines */
     if (line[0] == '\n' || line[0] == '\r' || line[0] == '\0')
       continue;
@@ -814,6 +817,7 @@ int jsonl_iterate(const char *path,
     count++;
     if (rc != 0) break;
   }
+  free(line);
   fclose(fp);
   return count;
 }

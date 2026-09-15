@@ -300,7 +300,14 @@ tool_result_t tool_file_write(tool_ctx_t *ctx, cJSON *params) {
             *p = '/';
           }
         }
-        mkdir(parent, 0755);
+        /* FIX #44: Check final mkdir return — permission-denied errors
+           * previously produced confusing subsequent error messages. */
+        if (mkdir(parent, 0755) != 0 && errno != EEXIST) {
+          char errmsg[512];
+          snprintf(errmsg, sizeof(errmsg),
+                   "Cannot create directory '%.400s': %s", parent, strerror(errno));
+          return tools_make_error(errmsg);
+        }
       }
     }
   }
@@ -473,7 +480,7 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
     /* Count lines before the edit for context — walk backward from pos */
     /* First, find the start of the line containing pos */
     char *line_start = pos;
-    {
+    if (pos > content) {
       char *scan = pos - 1;
       while (scan >= content && *scan != '\n')
         scan--;
@@ -485,11 +492,12 @@ tool_result_t tool_file_edit(tool_ctx_t *ctx, cJSON *params) {
          * count ctx_before more newlines to find our context boundary. */
     int ctx_before = 3;
     char *ctx_start = line_start;
-    char *scan = line_start - 1;
+    /* Guard: avoid pointer-before-buffer UB when edit is at byte 0 */
+    char *scan = (line_start > content) ? line_start - 1 : content;
 
     /* Skip the newline immediately before line_start (it belongs to
          * the previous line, not to our context count) */
-    if (scan >= content && *scan == '\n') scan--;
+    if (scan > content && *scan == '\n') scan--;
 
     /* Now count ctx_before newlines walking backward */
     int found = 0;

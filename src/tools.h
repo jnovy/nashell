@@ -168,6 +168,7 @@ typedef struct {
     int is_new_file; /* 1 = file_write created this (rollback = delete) */
   } txn_edits[TXN_MAX_EDITS];
   int txn_n_edits;   /* number of entries in txn_edits[] */
+  int txn_overflowed; /* 1 = some edits not tracked due to TXN_MAX_EDITS limit */
 
   /* Decision observability: prediction tracking for harness evolution.
    * NULL when prediction_tracking is disabled. */

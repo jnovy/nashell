@@ -35,6 +35,7 @@ void llm_msg_free_fields(llm_msg_t *m) {
 static int llm_chat_ensure_capacity(llm_chat_t *chat) {
   if (chat->n_msgs < chat->cap_msgs) return 0;
   int new_cap = chat->cap_msgs * 2;
+  if (new_cap < chat->cap_msgs) return -1; /* overflow guard */
   if (safe_realloc((void **)&chat->msgs, (size_t)new_cap * sizeof(llm_msg_t))) return -1;
   chat->cap_msgs = new_cap;
   return 0;

@@ -839,10 +839,9 @@ static char *react_summarize_truncated(react_ctx_t *ctx, const char *response) {
   }
   llm_chat_add(sum_chat, "user", tail);
 
-  int saved_max = p->cfg.max_tokens;
-  p->cfg.max_tokens = 1024;
+  p->max_tokens_override = 1024;
   char *summary = provider_complete(p, sum_chat, NULL);
-  p->cfg.max_tokens = saved_max;
+  p->max_tokens_override = 0;
   llm_chat_free(sum_chat);
 
   return summary; /* NULL on failure - caller falls back to current behavior */
@@ -974,11 +973,10 @@ static int react_triage_task(react_ctx_t *ctx, const char *user_query) {
     "debugging, refactoring, or any task needing a plan.");
   llm_chat_add(chat, "user", user_query);
 
-  /* Save and override max_tokens for a minimal response */
-  int saved_max = p->cfg.max_tokens;
-  p->cfg.max_tokens = 16;
+  /* Override max_tokens for a minimal response (thread-safe via override field) */
+  p->max_tokens_override = 16;
   char *response = provider_complete(p, chat, NULL);
-  p->cfg.max_tokens = saved_max;
+  p->max_tokens_override = 0;
   llm_chat_free(chat);
 
   if (!response) return 0; /* fail open */
@@ -1025,6 +1023,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   int resume_step = 0;
   resume_step = react_checkpoint_restore(ctx, chat, user_query, on_event, userdata);
   int restored = (resume_step >= 0);
+  if (resume_step < 0) resume_step = 0;
 
 
   if (!restored) {
@@ -1806,7 +1805,8 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       unsigned _uh = 2166136261u;
       static const char *known[] = {"command", "path", "pattern", "content",
                                     "old_text", "new_text", "query", "question", "url", "key", "value",
-                                    "op", "section", "start_line", "end_line", "priority", "regex", NULL};
+                                    "op", "section", "start_line", "end_line", "priority", "regex",
+                                    "thought", NULL};
       cJSON *_it;
       cJSON_ArrayForEach(_it, action) {
         int _known = 0;

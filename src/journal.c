@@ -16,6 +16,7 @@
  * (SIGSEGV/SIGABRT/SIGBUS) in main.c can write a signal_death entry
  * using only async-signal-safe I/O.  Declared extern in journal.h. */
 char g_crash_journal_path[512];
+char g_crash_log_path[512];
 volatile sig_atomic_t g_crash_react_loop = 0;
 volatile sig_atomic_t g_crash_step = 0;
 
@@ -182,6 +183,9 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   if (start_ts > 0) {
     long sec = (long)start_ts;
     long frac = (long)((start_ts - (double)sec) * 100000);
+    /* FIX #47: FP rounding can make the fractional part negative
+       * (e.g. start_ts = 1.9999999... → sec=2, difference < 0). */
+    if (frac < 0) frac = 0;
     snprintf(ts, sizeof(ts), "%ld.%05ld", sec, frac);
   } else {
     struct timespec tp;

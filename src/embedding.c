@@ -10,6 +10,12 @@
 #include <string.h>
 #include <math.h>
 #include <curl/curl.h>
+#include <pthread.h>
+
+/* Mutex protecting shared ONNX session access across threads.
+ * embed_share() copies the onnx pointer without synchronization,
+ * so concurrent ONNX inference needs serialization. */
+static pthread_mutex_t onnx_mtx = PTHREAD_MUTEX_INITIALIZER;
 
 /* ── curl write callback ─────────────────────────────── */
 /* Now uses str_t from str.h — see str_write_cb in str.c */
@@ -131,8 +137,12 @@ int embed_count_tokens(const embed_ctx_t *ctx, const char *text) {
 
   switch (ctx->cfg.type) {
     case EMBED_ONNX:
-      if (ctx->onnx)
-        return onnx_count_tokens(ctx->onnx, text);
+      if (ctx->onnx) {
+        pthread_mutex_lock(&onnx_mtx);
+        int r = onnx_count_tokens(ctx->onnx, text);
+        pthread_mutex_unlock(&onnx_mtx);
+        return r;
+      }
       return -1;
     case EMBED_OLLAMA:
     case EMBED_OPENAI: {
@@ -488,7 +498,9 @@ embed_vec_t embed_text(embed_ctx_t *ctx, const char *text) {
   /* ONNX backend: local inference */
   if (ctx->cfg.type == EMBED_ONNX && ctx->onnx) {
     int dim = 0;
+    pthread_mutex_lock(&onnx_mtx);
     float *data = onnx_embed_text(ctx->onnx, text, &dim);
+    pthread_mutex_unlock(&onnx_mtx);
     if (data && dim > 0) {
       result.data = data;
       result.dim = dim;
@@ -635,8 +647,10 @@ embed_vec_t *embed_text_batch(embed_ctx_t *ctx, const char **texts,
       if (chunk > 32) chunk = 32;
 
       int batch_dim = 0;
+      pthread_mutex_lock(&onnx_mtx);
       float **batch = onnx_embed_text_batch(ctx->onnx,
                                             texts + offset, chunk, &batch_dim);
+      pthread_mutex_unlock(&onnx_mtx);
       if (batch && batch_dim > 0) {
         for (int i = 0; i < chunk; i++) {
           if (batch[i]) {

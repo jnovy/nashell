@@ -212,11 +212,16 @@ subprocess_result_t subprocess_run(char *const argv[],
         if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
           size_t remaining = (size_t)max_bytes - out->len;
           if (remaining > 0) str_append(out, buf, remaining);
+          r.output_capped = 1;
           break;
         }
         str_append(out, buf, (size_t)n);
         for (ssize_t i = 0; i < n; i++)
           if (buf[i] == '\n') r.line_count++;
+        if (max_lines > 0 && r.line_count >= max_lines) {
+          r.output_capped = 1;
+          break;
+        }
       }
       break;
     } else if (pr == 0) {
@@ -231,11 +236,16 @@ subprocess_result_t subprocess_run(char *const argv[],
           if (max_bytes > 0 && (out->len + (size_t)n) > (size_t)max_bytes) {
             size_t remaining = (size_t)max_bytes - out->len;
             if (remaining > 0) str_append(out, buf, remaining);
+            r.output_capped = 1;
             break;
           }
           str_append(out, buf, (size_t)n);
           for (ssize_t i = 0; i < n; i++)
             if (buf[i] == '\n') r.line_count++;
+          if (max_lines > 0 && r.line_count >= max_lines) {
+            r.output_capped = 1;
+            break;
+          }
         }
         close(pipefd[0]);
         r.exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;

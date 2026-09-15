@@ -480,12 +480,18 @@ typedef struct {
   int             dream_new_count;
   const char     *matched_profile_file;
   char            config_path[NASH_PATH_MAX]; /* for daemon bridge init */
+  pthread_t       backfill_tid;
+  int             backfill_running; /* 1 if backfill thread was created */
 } nash_ctx_t;
 
 /* Unified cleanup for global resources via nash_ctx_t.
  * All _free functions handle NULL safely, so partial init is fine. */
 static void nash_ctx_free(nash_ctx_t *ctx) {
   if (!ctx) return;
+  if (ctx->backfill_running) {
+    pthread_join(ctx->backfill_tid, NULL);
+    ctx->backfill_running = 0;
+  }
   session_index_free(ctx->session_idx);
   ctx->session_idx = NULL;
   g_session_idx = NULL;
@@ -1115,6 +1121,7 @@ static int run_daemon(nash_ctx_t *ctx, int telegram_mode, int matrix_mode,
   char mbox_dir[NASH_PATH_MAX];
   if (mailbox_init(ctx->nash_dir, mbox_dir, sizeof(mbox_dir)) != 0) {
     fprintf(stderr, "[error] failed to initialize mailbox\n");
+    daemon_lock_release();
     return 1;
   }
   fprintf(stderr, "[daemon] nash mailbox daemon started\n");
@@ -1285,10 +1292,12 @@ static int run_daemon(nash_ctx_t *ctx, int telegram_mode, int matrix_mode,
         s = &ws_pool[ws_pool_count];
         ws_pool_count++;
       } else {
-        /* Evict least-recently-used slot (skip slot 0 = default) */
+        /* Evict least-recently-used slot (skip slot 0 = default).
+         * Initialize to first active slot to avoid selecting inactive slots. */
         int lru = 1;
-        for (int ei = 2; ei < ws_pool_count; ei++) {
-          if (ws_pool[ei].active &&
+        for (int ei = 1; ei < ws_pool_count; ei++) {
+          if (!ws_pool[ei].active) continue;
+          if (!ws_pool[lru].active ||
               ws_pool[ei].last_used < ws_pool[lru].last_used)
             lru = ei;
         }
@@ -1837,7 +1846,7 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         pending_redirect = submitted_query;
         submitted_query = NULL;
         atomic_store(&react.pause_requested, 1);
-        ctx->provider->abort_retry = 1; /* wake provider_sleep early */
+        if (ctx->provider) ctx->provider->abort_retry = 1;
         ui_locked_set_status(ui, STATUS_RUNNING,
                              "Aborting to handle command...");
         continue;
@@ -1885,7 +1894,7 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         pending_redirect = submitted_query;
         submitted_query = NULL; /* ownership transferred */
         atomic_store(&react.pause_requested, 1);
-        ctx->provider->abort_retry = 1; /* wake provider_sleep early */
+        if (ctx->provider) ctx->provider->abort_retry = 1;
         ui_locked_set_status(ui, STATUS_RUNNING,
                              "Aborting current step...");
         continue;
@@ -1969,13 +1978,15 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
         .result = NULL,
         .done = 0,
       };
-      ctx->provider->abort_retry = 0; /* reset before new inference */
+      if (ctx->provider) ctx->provider->abort_retry = 0; /* reset before new inference */
       /* Snapshot the file the user is viewing so the LLM gets
        * context about what the user is looking at. */
       free(react.tui_viewing_file);
+      pthread_mutex_lock(&ui->mtx);
       react.tui_viewing_file = ui->current_filepath
                                  ? xstrdup(ui->current_filepath)
                                  : NULL;
+      pthread_mutex_unlock(&ui->mtx);
       free(submitted_query); /* strdup'd into final_query; ui_state_add_query also strdup'd */
       /* Forward query to bridge for session threading */
       route_query_to_outbox(ctx->nash_dir, final_query,
@@ -2156,32 +2167,36 @@ static void crash_handler(int sig) {
   const char *name = sig == SIGSEGV ? "SIGSEGV"
                    : sig == SIGABRT ? "SIGABRT"
                    : sig == SIGBUS  ? "SIGBUS"
-                   : "unknown signal";
-  char hdr[128];
-  int n = snprintf(hdr, sizeof(hdr),
-                   "\n=== nash crash: %s (signal %d) ===\n", name, sig);
-  if (n > 0) write(STDERR_FILENO, hdr, (size_t)n);
+                   : "unknown";
+  /* Use only async-signal-safe functions: write(), open(), close(),
+   * backtrace(), backtrace_symbols_fd(), raise(), _exit(). */
+  write(STDERR_FILENO, "\n=== nash crash: ", 18);
+  write(STDERR_FILENO, name, strlen(name));
+  write(STDERR_FILENO, " ===\n", 5);
 
   void *frames[64];
   int depth = backtrace(frames, 64);
   backtrace_symbols_fd(frames, depth, STDERR_FILENO);
 
-  /* Also write to ~/.nash/crash.log for post-mortem */
-  const char *home = getenv("HOME");
-  if (home) {
-    char path[512];
-    snprintf(path, sizeof(path), "%s/.nash/crash.log", home);
-    int fd = open(path, O_WRONLY | O_CREAT | O_APPEND, 0644);
+  /* Also write to ~/.nash/crash.log for post-mortem.
+   * Path is pre-cached at startup in g_crash_log_path to avoid
+   * calling getenv() (not async-signal-safe) in the handler. */
+  if (g_crash_log_path[0]) {
+    int fd = open(g_crash_log_path, O_WRONLY | O_CREAT | O_APPEND, 0644);
     if (fd >= 0) {
-      write(fd, hdr, (size_t)n);
+      write(fd, "\n=== nash crash: ", 18);
+      write(fd, name, strlen(name));
+      write(fd, " ===\n", 5);
       backtrace_symbols_fd(frames, depth, fd);
       write(fd, "\n", 1);
       close(fd);
     }
   }
 
-  /* Write a signal_death entry to the active journal using only
-   * async-signal-safe functions (open, write, close, snprintf). */
+  /* Write a signal_death entry to the active journal.
+   * Note: snprintf is NOT strictly async-signal-safe, but is
+   * safe in practice on glibc/musl when not using locale-dependent
+   * formatting.  This is best-effort crash logging. */
   if (g_crash_journal_path[0]) {
     char jentry[512];
     int jn = snprintf(jentry, sizeof(jentry),
@@ -2211,6 +2226,14 @@ int main(int argc, char **argv) {
      * curl sets CURLOPT_NOSIGNAL by default in multi-threaded code, but
      * our popen calls (gcloud auth) and direct pipe I/O are unprotected. */
   signal(SIGPIPE, SIG_IGN);
+
+  /* Pre-cache crash log path for async-signal-safe access in handler */
+  {
+    const char *home = getenv("HOME");
+    if (home)
+      snprintf(g_crash_log_path, sizeof(g_crash_log_path),
+               "%s/.nash/crash.log", home);
+  }
 
   /* Install crash handler for post-mortem diagnosis */
   {
@@ -2613,12 +2636,19 @@ int main(int argc, char **argv) {
 
   /* Deep-copy resolved provider into cfg->provider (owned strings).
      * This populates the "resolved provider snapshot" that banner.c,
-     * react.c, config_dump_spec, etc. all read from. */
+     * react.c, config_dump_spec, etc. all read from.
+     * Free previous values to avoid leaking if fields were already set. */
+  free(cfg->provider.type);
   cfg->provider.type = resolved_prov.type ? xstrdup(resolved_prov.type) : NULL;
+  free(cfg->provider.model_id);
   cfg->provider.model_id = resolved_prov.model_id ? xstrdup(resolved_prov.model_id) : NULL;
+  free(cfg->provider.api_base);
   cfg->provider.api_base = resolved_prov.api_base ? xstrdup(resolved_prov.api_base) : NULL;
+  free(cfg->provider.api_key_env);
   cfg->provider.api_key_env = resolved_prov.api_key_env ? xstrdup(resolved_prov.api_key_env) : NULL;
+  free(cfg->provider.project_id);
   cfg->provider.project_id = resolved_prov.project_id ? xstrdup(resolved_prov.project_id) : NULL;
+  free(cfg->provider.region);
   cfg->provider.region = resolved_prov.region ? xstrdup(resolved_prov.region) : NULL;
   cfg->provider.context_size = resolved_prov.context_size;
   cfg->provider.chars_per_token = resolved_prov.chars_per_token;
@@ -2881,9 +2911,8 @@ int main(int argc, char **argv) {
           bfa->embed_cfg.max_input_chars = src_embed->cfg.max_input_chars;
           bfa->session_idx = session_idx;
 
-          pthread_t bf_tid;
-          if (pthread_create(&bf_tid, NULL, backfill_thread_fn, bfa) == 0) {
-            pthread_detach(bf_tid);
+          if (pthread_create(&ctx.backfill_tid, NULL, backfill_thread_fn, bfa) == 0) {
+            ctx.backfill_running = 1;
           } else {
             nash_log("[backfill] failed to create thread, running synchronously");
             backfill_thread_fn(bfa); /* fallback: blocking */

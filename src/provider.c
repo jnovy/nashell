@@ -466,7 +466,9 @@ cJSON *build_openai_base_request(provider_t *p, llm_chat_t *chat,
                                  provider_type_t provider_type) {
   cJSON *req = cJSON_CreateObject();
   cJSON_AddStringToObject(req, "model", model_id ? model_id : "gpt-4o");
-  cJSON_AddNumberToObject(req, max_token_field, p->cfg.max_tokens);
+  cJSON_AddNumberToObject(req, max_token_field,
+                          p->max_tokens_override > 0 ? p->max_tokens_override
+                                                      : p->cfg.max_tokens);
   cJSON_AddNumberToObject(req, "temperature", p->cfg.temperature);
   if (p->cfg.top_p < 1.0f)
     cJSON_AddNumberToObject(req, "top_p", p->cfg.top_p);
@@ -1202,8 +1204,11 @@ static char *build_sse_result(provider_sse_state_t *st, llm_chat_t *chat) {
       size_t tc_len = st->thinking_content.len;
       const size_t MAX_THINKING_CHARS = 8000;
       if (tc_len > MAX_THINKING_CHARS) {
-        /* Skip to tail, preserving the most recent reasoning */
+        /* Skip to tail, preserving the most recent reasoning.
+         * Advance past any UTF-8 continuation bytes (10xxxxxx) to avoid
+         * splitting a multi-byte codepoint at the truncation boundary. */
         tc = tc + (tc_len - MAX_THINKING_CHARS);
+        while (((unsigned char)*tc & 0xC0) == 0x80) tc++;
       }
       cJSON_AddStringToObject(obj, "thought", tc);
       result = cJSON_PrintUnformatted(obj);

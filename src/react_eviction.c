@@ -1729,8 +1729,13 @@ void react_maybe_evict(react_ctx_t *ctx, llm_chat_t *chat, int step,
     if (task_text.len > 0) {
       /* Truncate to embedding model's max input */
       int max_chars = embed_max_input_chars(emb);
-      if ((int)task_text.len > max_chars)
-        task_text.data[utf8_clamp(task_text.data, (size_t)max_chars)] = '\0';
+      if ((int)task_text.len > max_chars) {
+        /* FIX #41: Update .len after truncation — callers relying on .len
+           * would otherwise see stale length past the NUL terminator. */
+        size_t clamped = utf8_clamp(task_text.data, (size_t)max_chars);
+        task_text.data[clamped] = '\0';
+        task_text.len = clamped;
+      }
 
       embed_vec_t task_vec = embed_text(emb, task_text.data);
       if (task_vec.data) {

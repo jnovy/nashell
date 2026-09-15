@@ -13,6 +13,7 @@
 #include <strings.h> /* strcasestr */
 #include <unistd.h>  /* unlink */
 #include <math.h>    /* log */
+#include <limits.h>  /* INT_MAX — FIX #45 */
 
 /* ── helpers ─────────────────────────────────────────── */
 
@@ -29,6 +30,11 @@ void key_to_path(const char *key, const char *ext, char *out, size_t out_sz) {
   size_t i = 0;
   for (; key[i] && i < out_sz - ext_len - 1; i++)
     out[i] = (key[i] == ':' || key[i] == '/') ? '_' : key[i];
+  /* FIX #38: Warn when key is truncated — two different long keys could
+     * silently collide after truncation to the same filename. */
+  if (key[i] != '\0')
+    fprintf(stderr, "[nash] warning: memory key truncated (len %zu > %zu): %.40s...\n",
+            strlen(key), out_sz - ext_len - 1, key);
   /* FIX #12: Use memcpy instead of strcat — the loop already
      * reserved exactly ext_len+1 bytes, so strcat's linear scan
      * for NUL is unnecessary and fragile. */
@@ -221,11 +227,13 @@ static void mem_index_free(mem_index_t *idx) {
 static mem_index_entry_t *mem_index_find(mem_index_t *idx, const char *key) {
   if (!idx || !key || !idx->map.slots || idx->count == 0) return NULL;
   unsigned int slot = mem_fnv1a(key) & (unsigned)(idx->map.cap - 1);
+  int probes = 0;
   while (idx->map.slots[slot] != -1) {
     int ei = idx->map.slots[slot];
     if (idx->entries[ei].key && strcmp(idx->entries[ei].key, key) == 0)
       return &idx->entries[ei];
     slot = (slot + 1) & (unsigned)(idx->map.cap - 1);
+    if (++probes >= idx->map.cap) return NULL; /* safety: prevent infinite loop */
   }
   return NULL;
 }
@@ -253,8 +261,11 @@ static void mem_index_map_insert(mem_index_t *idx, const char *key, int entry_id
     return; /* rebuild already inserts all entries */
   }
   unsigned int slot = mem_fnv1a(key) & (unsigned)(idx->map.cap - 1);
-  while (idx->map.slots[slot] != -1)
+  int probes = 0;
+  while (idx->map.slots[slot] != -1) {
     slot = (slot + 1) & (unsigned)(idx->map.cap - 1);
+    if (++probes >= idx->map.cap) return; /* safety: prevent infinite loop */
+  }
   idx->map.slots[slot] = entry_idx;
 }
 
@@ -826,6 +837,8 @@ int memory_store(memory_t *m, const char *key, const char *value,
     } else {
       /* FIX #5: Check mem_index_grow return to avoid heap overflow */
       if (mem_index_grow(&m->idx) != 0) {
+        /* Remove the file we just wrote to avoid orphan on disk */
+        unlink(path);
         cJSON_Delete(entry);
         pthread_mutex_unlock(&m->mtx);
         return -1;
@@ -1022,7 +1035,11 @@ int memory_seed_defaults(memory_t *m, const char *datadir) {
       continue;
     }
 
-    /* Only seed if key doesn't already exist */
+    /* Only seed if key doesn't already exist.
+     * FIX #46: Note — this find+store is not atomic (TOCTOU), but
+     * memory_seed_defaults() is only called during single-threaded
+     * startup, so the race is benign. A duplicate store would just
+     * overwrite with the same value (idempotent). */
     mem_index_entry_t *existing = memory_find(m, jkey->valuestring);
     if (!existing) {
       memory_store(m, jkey->valuestring, jval->valuestring,
@@ -1492,7 +1509,11 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
   /* Ref-boost using index refs — O(N×R) via key→index hash map */
   if (n_scored > 0) {
     /* Build open-addressing hash map: key → scored index */
-    int map_cap = n_scored < 16 ? 64 : n_scored * 4; /* power-of-2, load ≤ 0.25 */
+    /* FIX #45: Guard against integer overflow — n_scored * 4 can overflow
+       * int when n_scored > INT_MAX/4 (~500M entries). Cap to a safe maximum. */
+    int map_cap = n_scored < 16 ? 64
+                : n_scored > (INT_MAX / 4) ? INT_MAX / 2
+                : n_scored * 4; /* power-of-2, load ≤ 0.25 */
     /* Ensure power-of-2 */
     {
       int v = map_cap - 1;
@@ -1514,8 +1535,11 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
     for (int j = 0; j < n_scored; j++) {
       const char *k = m->idx.entries[scored[j].idx_pos].key;
       int slot = (int)(mem_fnv1a(k) & (unsigned)map_mask);
-      while (ref_map[slot].key)
+      int probes = 0;
+      while (ref_map[slot].key) {
         slot = (slot + 1) & map_mask;
+        if (++probes >= map_cap) break; /* safety: prevent infinite loop */
+      }
       ref_map[slot].key = k;
       ref_map[slot].idx = j;
     }
@@ -3100,6 +3124,8 @@ void memory_find_free(mem_index_entry_t *entry) {
   free(entry->supersedes);
   free(entry->validity);
   free(entry->basis);
+  free(entry->code);
+  free(entry->code_language);
   free(entry);
 }
 

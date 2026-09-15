@@ -79,6 +79,8 @@ char *store_save(store_t *s, const char *content) {
 
 char *store_resolve(store_t *s, const char *hash) {
   if (!s || !hash) return NULL;
+  /* Reject path traversal attempts in hash parameter */
+  if (strstr(hash, "..") || strchr(hash, '/')) return NULL;
   char *path = NULL;
   if (asprintf(&path, "%s/%s", s->dir, hash) < 0) return NULL;
   return path;

@@ -20,7 +20,10 @@
 
 /* Canonicalize a file path for consistent comparison.
  * Uses realpath() for existing files; strips leading "./" otherwise.
- * Returns a static buffer - NOT thread-safe, copy if needed. */
+ * Returns a static buffer - NOT thread-safe, NOT reentrant.
+ * Do NOT call canon_path() twice in the same expression (e.g. as two
+ * arguments to snprintf) - the second call overwrites the first result.
+ * Copy the result with xstrdup() if you need to preserve it. */
 static const char *canon_path(const char *path) {
   static char buf[PATH_MAX];
   if (!path) return "";
@@ -469,6 +472,7 @@ void tool_txn_record(tool_ctx_t *ctx, const char *path,
   if (ctx->txn_n_edits >= TXN_MAX_EDITS) {
     nash_log("[tools] rollback transaction full (%d edits) - new edits not tracked",
              TXN_MAX_EDITS);
+    ctx->txn_overflowed = 1;
     return;
   }
   /* Dedup: only keep the FIRST pre-edit hash per path so rollback
@@ -491,6 +495,7 @@ void tool_txn_clear(tool_ctx_t *ctx) {
     free(ctx->txn_edits[i].pre_hash);
   }
   ctx->txn_n_edits = 0;
+  ctx->txn_overflowed = 0;
 }
 
 char *tool_format_inform_block(tool_ctx_t *ctx) {
@@ -1761,13 +1766,20 @@ void tool_flush_deferred_consolidations(tool_ctx_t *ctx) {
   }
 
   /* Set consolidating flag on all involved memory_t instances.
-     * Use CAS on global; also set on workspace if active. */
+     * Use CAS on global; also set on workspace if active.
+     * Retry with backoff if another consolidation is in progress,
+     * otherwise queued entries would be silently lost. */
   int expected = 0;
-  if (ctx->memory &&
-      !atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
-    /* Another consolidation is in progress - keep entries queued for retry
-         * instead of discarding them (which would silently lose work). */
-    return;
+  if (ctx->memory) {
+    int retries = 0;
+    while (!atomic_compare_exchange_strong(&ctx->memory->consolidating, &expected, 1)) {
+      if (++retries > 50) { /* ~500ms total wait - give up */
+        return;
+      }
+      expected = 0;
+      struct timespec ts = {0, 10000000}; /* 10ms */
+      nanosleep(&ts, NULL);
+    }
   }
   memory_t *ws_mem = (ctx->ws && ctx->ws->workspace) ? ctx->ws->workspace : NULL;
   if (ws_mem) atomic_store(&ws_mem->consolidating, 1);
@@ -1935,6 +1947,10 @@ static tool_result_t tool_rollback(tool_ctx_t *ctx, cJSON *params) {
       }
     }
   }
+
+  if (ctx->txn_overflowed)
+    str_append_cstr(&detail, "  WARNING: some edits exceeded tracking limit "
+                            "and were NOT rolled back\n");
 
   /* Clear transaction state */
   tool_txn_clear(ctx);
@@ -2256,7 +2272,11 @@ char *tools_system_prompt(const char *session_dir, const char *workspace, int he
   struct tm utc_buf;
   struct tm *utc = gmtime_r(&now, &utc_buf);
   char timebuf[64];
-  strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M UTC", utc);
+  /* FIX #42: Guard against NULL return from gmtime_r (e.g. invalid time_t) */
+  if (utc)
+    strftime(timebuf, sizeof(timebuf), "%Y-%m-%d %H:%M UTC", utc);
+  else
+    snprintf(timebuf, sizeof(timebuf), "(unknown time)");
 
   /* Current working directory */
   char cwdbuf[1024];

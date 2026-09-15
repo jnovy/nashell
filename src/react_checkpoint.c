@@ -22,6 +22,12 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
   int saved_step = json_int(cp, "step", 0);
   int saved_loop = json_int(cp, "react_loop", 0);
+  /* FIX #39: Clamp checkpoint values — corrupted JSON could yield
+     * negative or absurdly large values that break loop logic. */
+  if (saved_step < 0) saved_step = 0;
+  if (saved_loop < 0) saved_loop = 0;
+  if (saved_step > 10000) saved_step = 0; /* sanity cap */
+  if (saved_loop > 10000) saved_loop = 0;
 
   /* Restore scratchpad (section-based; handles legacy plain-text format too) */
   scratchpad_load(&ctx->tools->scratch, ctx->tools->session_dir);
@@ -115,8 +121,12 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
      * that overwrite the in-memory map entries for restored aliases. */
   int max_restored_seq = -1;
 
-  char line[NASH_LINE_MAX];
-  while (fgets(line, sizeof(line), f)) {
+  /* FIX #40: Use getline() for dynamic allocation — journal lines >64KB
+     * were silently truncated by the fixed NASH_LINE_MAX buffer, causing
+     * cJSON_Parse to fail and entries to be silently skipped. */
+  char *line = NULL;
+  size_t line_alloc = 0;
+  while (getline(&line, &line_alloc, f) != -1) {
     cJSON *entry = cJSON_Parse(line);
     if (!entry) continue;
 
@@ -297,6 +307,7 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
 
     cJSON_Delete(entry);
   }
+  free(line); /* FIX #40: free getline buffer */
   fclose(f);
 
   /* Advance next_seq past all restored aliases so new tool_register_alias()
