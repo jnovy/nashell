@@ -262,14 +262,49 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     return 1;
   }
 
-  /* HTTP 400 (client error = bad request) — aggressive context eviction */
+  /* HTTP 400 (client error = bad request) — context eviction or bail.
+   *
+   * Not all HTTP 400 errors are context overflow.  Policy violations,
+   * unsupported parameters (e.g. temperature on reasoning models), and
+   * model-access restrictions also return 400.  Eviction is useless for
+   * those, so detect them first and surface the actual server message. */
   if (srv_err && strstr(srv_err, "HTTP 400")) {
+    /* Check whether this looks like a context-overflow error.
+     * Provider responses for context overflow typically mention at least
+     * one of these keywords.  If NONE match, the 400 is about something
+     * else entirely - bail immediately with the real error. */
+    static const char *ctx_overflow_hints[] = {
+      "context", "token", "length", "too long", "too large",
+      "maximum", "limit", "exceed", "capacity", "prompt",
+      NULL
+    };
+    int looks_like_overflow = 0;
+    for (const char **kw = ctx_overflow_hints; *kw; kw++) {
+      if (strcasestr(srv_err, *kw)) {
+        looks_like_overflow = 1;
+        break;
+      }
+    }
+    if (!looks_like_overflow) {
+      /* Non-context HTTP 400 - show the actual error, not a generic msg */
+      char emsg[600];
+      snprintf(emsg, sizeof(emsg),
+               "HTTP 400 (not a context overflow) - %.500s", srv_err);
+      ev.message = emsg;
+      react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, emsg);
+      return 1;
+    }
+
     (*total_400)++;
     if (*total_400 >= 6) {
-      ev.message = "HTTP 400 - context still too large after "
-                   "repeated eviction, giving up";
+      char emsg[600];
+      snprintf(emsg, sizeof(emsg),
+               "HTTP 400 - context still too large after "
+               "repeated eviction, giving up - %.500s", srv_err);
+      ev.message = emsg;
       react_emit(on_event, userdata, &ev);
-      journal_recovery_event(ctx, step, ev.message);
+      journal_recovery_event(ctx, step, emsg);
       return 1;
     }
     int n_evict = react_emergency_evict_and_reinject(ctx, chat);
@@ -283,9 +318,13 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       react_emit(on_event, userdata, &ev);
       journal_recovery_event(ctx, step, emsg);
     } else {
-      ev.message = "HTTP 400 - no evictable messages remain, giving up";
+      char emsg[600];
+      snprintf(emsg, sizeof(emsg),
+               "HTTP 400 - no evictable messages remain, "
+               "giving up - %.500s", srv_err);
+      ev.message = emsg;
       react_emit(on_event, userdata, &ev);
-      journal_recovery_event(ctx, step, ev.message);
+      journal_recovery_event(ctx, step, emsg);
       return 1;
     }
     *consecutive_null = 0;
