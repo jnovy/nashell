@@ -78,6 +78,9 @@ typedef struct {
   int outcome;           /* MEM_OUTCOME_* - session outcome that produced this memory */
   char *code;            /* optional executable code snippet (owned, NULL = none) */
   char *code_language;   /* language tag for code (e.g. "python", "bash") (owned, NULL = none) */
+  double last_hit_at;    /* epoch of most recent recall_hits increment, 0.0 = unknown */
+  double last_miss_at;   /* epoch of most recent recall_misses increment, 0.0 = unknown */
+  double last_accessed;  /* epoch of most recent access (recall/query), 0.0 = unknown */
 } mem_index_entry_t;
 
 /* FIX 2a: Hash map for O(1) key→index lookup (open-addressing, linear probing).
@@ -107,7 +110,8 @@ typedef struct {
   float recall_blend_substring; /* substring weight (default 0.5) */
   float vscore_exponent;        /* Bayesian vscore exponent (default 0.3, 0.0=disabled) */
   float superseded_demotion;    /* multiplicative penalty for superseded entries (default 0.3) */
-  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.0 = disabled) */
+  float recency_bonus;          /* soft temporal bonus for recent entries (default 0.08) */
+  float vscore_halflife;         /* vscore evidence half-life in days (default 90.0, 0=disabled) */
   float failure_bias;            /* scoring boost for failure-derived memories (default 1.3, 1.0=disabled).
                                   * Meta^n WS1: anti-pattern: keys get bias*1.1, lesson: keys get bias*0.9.
                                   * Entries with outcome=FAILURE get at least this multiplier. */
@@ -218,7 +222,8 @@ void memory_free(memory_t *m);
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus, float failure_bias);
+                              float recency_bonus, float failure_bias,
+                              float vscore_halflife);
 int memory_set_outcome(memory_t *m, const char *key, int outcome);
 
 /* Set executable code snippet on a memory entry.

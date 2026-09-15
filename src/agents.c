@@ -1172,7 +1172,8 @@ int agent_execute(agent_queue_t *q, const char *nash_dir,
                                   cfg->vscore_exponent,
                                   cfg->superseded_demotion,
                                   cfg->recency_bonus,
-                                  cfg->failure_bias);
+                                  cfg->failure_bias,
+                                  cfg->vscore_halflife);
       if (cfg->embedding.type &&
           strcmp(cfg->embedding.type, "none") != 0)
         workspace_init_embeddings(agent_ws, cfg->embedding.type,

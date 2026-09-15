@@ -172,7 +172,8 @@ void config_set_defaults(config_t *cfg) {
      *   with actual misses (vscore=0.33 → ×0.72). */
   if (cfg->vscore_exponent < 0) cfg->vscore_exponent = 0.3f;
   if (cfg->superseded_demotion < 0) cfg->superseded_demotion = 0.3f;
-  if (cfg->recency_bonus < 0) cfg->recency_bonus = 0.0f;
+  if (cfg->recency_bonus < 0) cfg->recency_bonus = 0.08f;
+  if (cfg->vscore_halflife < 0) cfg->vscore_halflife = 90.0f;
   if (cfg->failure_bias <= 0) cfg->failure_bias = 1.3f;
   if (cfg->tool_retry_limit <= 0) cfg->tool_retry_limit = 3;
   if (cfg->subtask_max_depth <= 0) cfg->subtask_max_depth = 3;
@@ -269,6 +270,7 @@ config_t *config_load(const char *path) {
   cfg->vscore_exponent = -1.0f; /* sentinel: 0 is valid (disables vscore) */
   cfg->superseded_demotion = -1.0f;
   cfg->recency_bonus = -1.0f;
+  cfg->vscore_halflife = -1.0f;
   cfg->failure_bias = -1.0f;
   /* Unified Spec: initialize profile react_flags sentinels to -1 (inherit) */
   cfg->profile_inject_memory = -1;
@@ -505,6 +507,10 @@ config_t *config_load(const char *path) {
     {
       double v = toml_dbl(limits, "recency_bonus", -1);
       if (v >= 0) cfg->recency_bonus = (float)v;
+    }
+    {
+      double v = toml_dbl(limits, "vscore_halflife", -1);
+      if (v >= 0) cfg->vscore_halflife = (float)v;
     }
     {
       double v = toml_dbl(limits, "failure_bias", -1);
@@ -932,6 +938,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
     p->vscore_exponent = -2.0f; /* -2 = inherit (0 and -1 are valid) */
     p->superseded_demotion = -2.0f;
     p->recency_bonus = -2.0f;
+    p->vscore_halflife = -2.0f;
     p->strip_sampling_params = -1; /* -1 = inherit */
     /* default_reasoning_effort = NULL from memset */
 
@@ -1011,6 +1018,10 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
       {
         double v = toml_dbl(mem_tbl, "recency_bonus", -2);
         if (v > -2) p->recency_bonus = (float)v;
+      }
+      {
+        double v = toml_dbl(mem_tbl, "vscore_halflife", -2);
+        if (v > -2) p->vscore_halflife = (float)v;
       }
       p->memory_index_max = toml_int(mem_tbl, "memory_index_max", 0);
       p->max_skills_per_query = toml_int(mem_tbl, "max_skills_per_query", 0);
@@ -1181,6 +1192,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
   if (p->vscore_exponent > -2.0f) cfg->vscore_exponent = p->vscore_exponent;
   if (p->superseded_demotion > -2.0f) cfg->superseded_demotion = p->superseded_demotion;
   if (p->recency_bonus > -2.0f) cfg->recency_bonus = p->recency_bonus;
+  if (p->vscore_halflife > -2.0f) cfg->vscore_halflife = p->vscore_halflife;
   if (p->memory_index_max > 0) cfg->memory_index_max = p->memory_index_max;
   if (p->max_skills_per_query > 0) cfg->max_skills_per_query = p->max_skills_per_query;
   if (p->max_lessons_per_query > 0) cfg->max_lessons_per_query = p->max_lessons_per_query;
@@ -1381,6 +1393,7 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
   fprintf(out, "vscore_exponent = %.1f\n", cfg->vscore_exponent);
   fprintf(out, "superseded_demotion = %.1f\n", cfg->superseded_demotion);
   fprintf(out, "recency_bonus = %.1f\n", cfg->recency_bonus);
+  fprintf(out, "vscore_halflife = %.1f\n", cfg->vscore_halflife);
   fprintf(out, "failure_bias = %.1f\n", cfg->failure_bias);
   fprintf(out, "memory_index_max = %d\n", cfg->memory_index_max);
   fprintf(out, "max_skills_per_query = %d\n", cfg->max_skills_per_query);
@@ -1732,6 +1745,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     {
       double vs = toml_dbl(mem, "recency_bonus", -1);
       if (vs >= 0) cfg->recency_bonus = (float)vs;
+    }
+    {
+      double vs = toml_dbl(mem, "vscore_halflife", -1);
+      if (vs >= 0) cfg->vscore_halflife = (float)vs;
     }
     {
       double vs = toml_dbl(mem, "failure_bias", -1);
@@ -2213,7 +2230,8 @@ int config_write_default(const char *path) {
     "recall_blend_substring = 0.6 # weight for substring matching in memory recall (0.0-1.0)\n"
     "vscore_exponent = 0.3        # power-law exponent for validation score (0.0=disabled, 1.0=full)\n"
     "superseded_demotion = 0.3    # multiplicative penalty for superseded entries (0.0-1.0)\n"
-    "recency_bonus = 0.0          # soft temporal bonus for recent entries (0.0 = disabled)\n"
+    "recency_bonus = 0.08         # soft temporal bonus for recent entries (0.0 = disabled)\n"
+    "vscore_halflife = 90.0       # vscore evidence half-life in days (0 = disabled)\n"
     "failure_bias = 1.3           # scoring boost for failure-derived memories (1.0 = disabled)\n"
     "tool_retry_limit = 3         # max consecutive errors on same tool before forced strategy switch\n"
     "checkpoint_frequency = 0     # save checkpoint every N steps (0 = every step)\n"

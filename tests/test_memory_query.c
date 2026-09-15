@@ -7,6 +7,8 @@
 
 #include "test_common.h"
 #include "../src/memory.h"
+#include <time.h>
+#include <math.h>
 
 /* ═══════════════════════════════════════════════════════════════════
  * Section 1: key_to_path (GAP M7)
@@ -139,7 +141,7 @@ static void test_query_min_score_filtering(void) {
                0, NULL, NULL, 0, NULL, 0);
 
   /* With very high min_score, only strong matches survive */
-  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f);
+  memory_set_recall_config(m, 0.70, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
   memory_results_t r = memory_query(m, "exact-match", 10);
   /* Only the key-matching entry should survive 0.70 threshold */
   ASSERT_EQ(r.count, 1);
@@ -158,7 +160,7 @@ static void test_query_ref_boost(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
   /* Use low min_score so weak matches survive */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
 
   /* Entry A: key matches "boost" → score = 0.75 (above 0.5 trigger).
      * Refs entry B. */
@@ -196,7 +198,7 @@ static void test_query_vscore_influence(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* Enable vscore with exponent 1.0 (full influence) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f, 90.0f);
 
   /* Both entries match equally on substring */
   memory_store(m, "lesson:proven-method", "how to fix bugs in code", 0, NULL, NULL, 0, NULL, 0);
@@ -232,7 +234,7 @@ static void test_query_vscore_disabled(void) {
   memory_t *m = make_test_memory(&dir);
 
   /* vscore disabled (exponent = 0) */
-  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f);
+  memory_set_recall_config(m, 0.05, 0.5, 0.5, 0.0, 0.3f, 0.0f, 1.3f, 90.0f);
 
   memory_store(m, "lesson:method-a", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:method-b", "how to fix bugs quickly", 0, NULL, NULL, 0, NULL, 0);
@@ -480,7 +482,7 @@ static void test_increment_nonexistent(void) {
 static void test_vscore_calculation(void) {
   char *dir;
   memory_t *m = make_test_memory(&dir);
-  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0, 0.3f, 0.0f, 1.3f, 90.0f);
 
   memory_store(m, "lesson:good-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
   memory_store(m, "lesson:bad-vscore", "fix issues in code", 0, NULL, NULL, 0, NULL, 0);
@@ -757,9 +759,286 @@ static void test_update_scores_zero(void) {
   finish_test_memory(m, dir);
 }
 
-/* ═══════════════════════════════════════════════════════════════════
+/* ===================================================================
+ * Section 9: Temporal scoring (recency, validity, vscore decay)
+ * =================================================================== */
+
+/* Helper: find a live index entry by key (not a copy, so we can modify
+ * timestamps for testing). Linear scan since mem_index_find is static. */
+__attribute__((unused))
+static mem_index_entry_t *find_index_entry(memory_t *m, const char *key) {
+  for (int i = 0; i < m->idx.count; i++)
+    if (strcmp(m->idx.entries[i].key, key) == 0)
+      return &m->idx.entries[i];
+  return NULL;
+}
+
+/* T1: Recent entry scores higher than old entry when recency_bonus > 0 */
+static void test_temporal_recency_bonus(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  /* vscore_exp=0 disables vscore influence; recency_bonus=0.08;
+   * failure_bias=1.0 disables failure boost; halflife irrelevant here */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.08f, 1.0f, 0.0f);
+
+  memory_store(m, "lesson:recent-tip", "optimize build speed", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:old-tip", "optimize build speed", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Push the old entry 180 days into the past */
+  mem_index_entry_t *ie = find_index_entry(m, "lesson:old-tip");
+  ASSERT_NOT_NULL(ie);
+  ie->created_at = (double)time(NULL) - 180.0 * 86400.0;
+
+  memory_results_t r = memory_query(m, "optimize build", 10);
+  ASSERT(r.count >= 2);
+  /* Recent entry should rank first */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:recent-tip");
+  ASSERT(r.entries[0].relevance > r.entries[1].relevance);
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T2: Volatile entry loses score as it ages */
+static void test_temporal_validity_volatile(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  /* vscore_exp=0, recency_bonus=0 so only validity scoring matters */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+
+  memory_store(m, "lesson:volatile-entry", "cache server port", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:persistent-entry", "cache server port", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Make both 90 days old */
+  double old_time = (double)time(NULL) - 90.0 * 86400.0;
+  mem_index_entry_t *vol = find_index_entry(m, "lesson:volatile-entry");
+  mem_index_entry_t *per = find_index_entry(m, "lesson:persistent-entry");
+  ASSERT_NOT_NULL(vol);
+  ASSERT_NOT_NULL(per);
+  vol->created_at = old_time;
+  per->created_at = old_time;
+
+  /* Mark one as volatile */
+  free(vol->validity);
+  vol->validity = strdup("volatile");
+
+  memory_results_t r = memory_query(m, "cache server", 10);
+  ASSERT(r.count >= 2);
+  /* Persistent entry should rank higher than volatile at 90 days old */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:persistent-entry");
+  ASSERT(r.entries[0].relevance > r.entries[1].relevance);
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T3: expires_when entry gets milder penalty than volatile */
+static void test_temporal_validity_expires_when(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+
+  memory_store(m, "lesson:vol-entry", "api endpoint config", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:exp-entry", "api endpoint config", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Make both 90 days old */
+  double old_time = (double)time(NULL) - 90.0 * 86400.0;
+  mem_index_entry_t *vol = find_index_entry(m, "lesson:vol-entry");
+  mem_index_entry_t *exp_e = find_index_entry(m, "lesson:exp-entry");
+  ASSERT_NOT_NULL(vol);
+  ASSERT_NOT_NULL(exp_e);
+  vol->created_at = old_time;
+  exp_e->created_at = old_time;
+
+  free(vol->validity);
+  vol->validity = strdup("volatile");
+  free(exp_e->validity);
+  exp_e->validity = strdup("expires_when:new release");
+
+  memory_results_t r = memory_query(m, "api endpoint", 10);
+  ASSERT(r.count >= 2);
+  /* expires_when has milder decay (60d half-life, 70% floor) than
+   * volatile (14d half-life, 50% floor), so expires_when should rank first */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:exp-entry");
+  ASSERT(r.entries[0].relevance > r.entries[1].relevance);
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T4: Old hits decay via halflife; entry with fewer but recent hits wins */
+static void test_temporal_vscore_decay(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  /* vscore_exp=1.0 so vscore fully influences scoring;
+   * recency_bonus=0 to isolate vscore effect; halflife=90 days */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 0.0f, 1.0f, 90.0f);
+
+  memory_store(m, "lesson:many-old-hits", "deploy to staging", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:few-new-hits", "deploy to staging", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Entry A: 10 hits, but last hit was 360 days ago (2 half-lives) */
+  for (int i = 0; i < 10; i++)
+    memory_increment_hits(m, "lesson:many-old-hits");
+  mem_index_entry_t *ie_a = find_index_entry(m, "lesson:many-old-hits");
+  ASSERT_NOT_NULL(ie_a);
+  ie_a->last_hit_at = (double)time(NULL) - 360.0 * 86400.0;
+
+  /* Entry B: 2 hits, last hit is now (recent) */
+  memory_increment_hits(m, "lesson:few-new-hits");
+  memory_increment_hits(m, "lesson:few-new-hits");
+  /* last_hit_at is set to now by increment, no need to adjust */
+
+  memory_results_t r = memory_query(m, "deploy staging", 10);
+  ASSERT(r.count >= 2);
+  /* Entry B (recent 2 hits, vscore~0.75) should beat entry A
+   * (10 hits decayed by 4x at 360d/90d halflife, effective~0.63 vscore~0.62) */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:few-new-hits");
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T5: With halflife=0, temporal decay is disabled; old hits count fully */
+static void test_temporal_vscore_halflife_zero(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  /* halflife=0 disables decay */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 1.0f, 0.3f, 0.0f, 1.0f, 0.0f);
+
+  memory_store(m, "lesson:many-old", "run test suite", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:few-new", "run test suite", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Entry A: 10 hits, last hit was 180 days ago */
+  for (int i = 0; i < 10; i++)
+    memory_increment_hits(m, "lesson:many-old");
+  mem_index_entry_t *ie_a = find_index_entry(m, "lesson:many-old");
+  ASSERT_NOT_NULL(ie_a);
+  ie_a->last_hit_at = (double)time(NULL) - 180.0 * 86400.0;
+
+  /* Entry B: 2 hits, recent */
+  memory_increment_hits(m, "lesson:few-new");
+  memory_increment_hits(m, "lesson:few-new");
+
+  memory_results_t r = memory_query(m, "run test", 10);
+  ASSERT(r.count >= 2);
+  /* With halflife=0 (no decay), 10 old hits should still beat 2 new hits */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:many-old");
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T6: Recently-accessed old entry beats untouched old entry */
+static void test_temporal_last_accessed_recency(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+  /* recency_bonus=0.08 so recency matters; vscore_exp=0 to isolate */
+  memory_set_recall_config(m, 0.01, 0.5, 0.5, 0.0f, 0.3f, 0.08f, 1.0f, 0.0f);
+
+  memory_store(m, "lesson:accessed-recent", "handle error codes", 0,
+               NULL, NULL, 0, NULL, 0);
+  memory_store(m, "lesson:not-accessed", "handle error codes", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Make both entries 180 days old */
+  double old_time = (double)time(NULL) - 180.0 * 86400.0;
+  mem_index_entry_t *ie_a = find_index_entry(m, "lesson:accessed-recent");
+  mem_index_entry_t *ie_b = find_index_entry(m, "lesson:not-accessed");
+  ASSERT_NOT_NULL(ie_a);
+  ASSERT_NOT_NULL(ie_b);
+  ie_a->created_at = old_time;
+  ie_b->created_at = old_time;
+
+  /* One was accessed recently */
+  ie_a->last_accessed = (double)time(NULL);
+  ie_b->last_accessed = 0.0;
+
+  memory_results_t r = memory_query(m, "handle error", 10);
+  ASSERT(r.count >= 2);
+  /* Recently-accessed entry should rank higher due to recency calc
+   * using max(created_at, last_accessed) */
+  ASSERT_STR_EQ(r.entries[0].key, "lesson:accessed-recent");
+  ASSERT(r.entries[0].relevance > r.entries[1].relevance);
+
+  memory_results_free(&r);
+  finish_test_memory(m, dir);
+}
+
+/* T7: memory_increment_hits/misses sets last_hit_at/last_miss_at */
+static void test_temporal_increment_sets_timestamp(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+
+  memory_store(m, "lesson:ts-test", "test timestamps", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Before increment, timestamps should be 0 */
+  mem_index_entry_t *e = memory_find(m, "lesson:ts-test");
+  ASSERT_NOT_NULL(e);
+  double hit_before = e->last_hit_at;
+  double miss_before = e->last_miss_at;
+  memory_find_free(e);
+
+  /* Increment hits */
+  memory_increment_hits(m, "lesson:ts-test");
+  e = memory_find(m, "lesson:ts-test");
+  ASSERT_NOT_NULL(e);
+  ASSERT(e->last_hit_at > hit_before);
+  ASSERT(e->last_hit_at > 1000000000.0); /* sanity: after year 2001 */
+  memory_find_free(e);
+
+  /* Increment misses */
+  memory_increment_misses(m, "lesson:ts-test");
+  e = memory_find(m, "lesson:ts-test");
+  ASSERT_NOT_NULL(e);
+  ASSERT(e->last_miss_at > miss_before);
+  ASSERT(e->last_miss_at > 1000000000.0);
+  memory_find_free(e);
+
+  finish_test_memory(m, dir);
+}
+
+/* T8: memory_update_scores sets last_hit_at when adding hits */
+static void test_temporal_update_scores_sets_timestamp(void) {
+  char *dir;
+  memory_t *m = make_test_memory(&dir);
+
+  memory_store(m, "lesson:us-test", "update scores test", 0,
+               NULL, NULL, 0, NULL, 0);
+
+  /* Add hits via update_scores */
+  memory_update_scores(m, "lesson:us-test", 3, 0);
+  mem_index_entry_t *e = memory_find(m, "lesson:us-test");
+  ASSERT_NOT_NULL(e);
+  ASSERT(e->last_hit_at > 1000000000.0);
+  ASSERT_EQ(e->recall_hits, 3);
+  memory_find_free(e);
+
+  /* Add misses via update_scores */
+  memory_update_scores(m, "lesson:us-test", 0, 2);
+  e = memory_find(m, "lesson:us-test");
+  ASSERT_NOT_NULL(e);
+  ASSERT(e->last_miss_at > 1000000000.0);
+  ASSERT_EQ(e->recall_misses, 2);
+  memory_find_free(e);
+
+  finish_test_memory(m, dir);
+}
+
+/* ===================================================================
  * Main
- * ═══════════════════════════════════════════════════════════════════ */
+ * =================================================================== */
 
 int main(void) {
   printf("test_memory_query:\n");
@@ -817,6 +1096,16 @@ int main(void) {
   RUN_TEST(test_update_scores);
   RUN_TEST(test_update_scores_nonexistent);
   RUN_TEST(test_update_scores_zero);
+
+  /* Section 9: temporal scoring */
+  RUN_TEST(test_temporal_recency_bonus);
+  RUN_TEST(test_temporal_validity_volatile);
+  RUN_TEST(test_temporal_validity_expires_when);
+  RUN_TEST(test_temporal_vscore_decay);
+  RUN_TEST(test_temporal_vscore_halflife_zero);
+  RUN_TEST(test_temporal_last_accessed_recency);
+  RUN_TEST(test_temporal_increment_sets_timestamp);
+  RUN_TEST(test_temporal_update_scores_sets_timestamp);
 
   TEST_SUMMARY();
 }

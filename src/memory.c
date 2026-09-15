@@ -162,6 +162,9 @@ static void mem_index_entry_deep_copy(mem_index_entry_t *dst,
   dst->code = src->code ? xstrdup(src->code) : NULL;
   dst->code_language = src->code_language ? xstrdup(src->code_language) : NULL;
   dst->gen = src->gen;
+  dst->last_hit_at = src->last_hit_at;
+  dst->last_miss_at = src->last_miss_at;
+  dst->last_accessed = src->last_accessed;
   dst->n_refs = src->n_refs;
   if (src->refs && src->n_refs > 0) {
     dst->refs = xcalloc((size_t)src->n_refs, sizeof(char *));
@@ -361,6 +364,13 @@ static void mem_index_entry_from_json(mem_index_entry_t *ie, cJSON *entry,
   const char *clang_s = json_str(entry, "code_language");
   ie->code_language = clang_s ? xstrdup(clang_s) : NULL;
 
+  /* Temporal scoring timestamps - last evidence and access times.
+   * These enable time-weighted vscore (P1) and last-accessed recency (P3).
+   * Backward compatible: missing fields default to 0.0 (unknown). */
+  ie->last_hit_at = json_num(entry, "last_hit_at", 0.0);
+  ie->last_miss_at = json_num(entry, "last_miss_at", 0.0);
+  ie->last_accessed = json_num(entry, "last_accessed", 0.0);
+
   /* Copy refs */
   cJSON *refs_arr = cJSON_GetObjectItem(entry, "refs");
   if (refs_arr && cJSON_IsArray(refs_arr)) {
@@ -461,7 +471,8 @@ memory_t *memory_new(const char *project_root) {
   m->recall_blend_substring = 0.5f;
   m->vscore_exponent = 0.3f;
   m->superseded_demotion = 0.3f;
-  m->recency_bonus = 0.0f;
+  m->recency_bonus = 0.08f;
+  m->vscore_halflife = 90.0f;
 
   /* Recursive mutex: memory_prune() → memory_delete_batch() nesting. */
   {
@@ -512,7 +523,8 @@ void memory_free(memory_t *m) {
 void memory_set_recall_config(memory_t *m, double min_score,
                               float blend_semantic, float blend_substring,
                               float vscore_exp, float superseded_demotion,
-                              float recency_bonus, float failure_bias) {
+                              float recency_bonus, float failure_bias,
+                              float vscore_halflife) {
   if (!m) return;
   /* FIX BUG-22: Acquire mutex so these writes are atomic with respect to
      * memory_query() which reads these fields under the same lock. */
@@ -524,6 +536,7 @@ void memory_set_recall_config(memory_t *m, double min_score,
   m->superseded_demotion = superseded_demotion;
   m->recency_bonus = recency_bonus;
   m->failure_bias = failure_bias;
+  m->vscore_halflife = vscore_halflife;
   pthread_mutex_unlock(&m->mtx);
 }
 
@@ -1140,6 +1153,10 @@ static double score_entry_hybrid(const char *key, const char *value,
                                  float superseded_demotion,
                                  float recency_bonus,
                                  float failure_bias, int outcome,
+                                 const char *validity,
+                                 double last_hit_at, double last_miss_at,
+                                 double last_accessed,
+                                 float vscore_halflife,
                                  double *out_relevance,
                                  double *out_importance) {
   double relevance;
@@ -1251,18 +1268,45 @@ static double score_entry_hybrid(const char *key, const char *value,
     composite *= (double)superseded_demotion;
   }
 
-  /* Optional soft temporal bonus (SodaMem beta).
-     * NOT recency decay - old knowledge is not penalized.
-     * This is a BONUS for recently-created entries, giving them a mild
-     * edge when competing with older entries of similar relevance.
-     * Disabled by default (recency_bonus=0.0).
+  /* P4: Validity-aware scoring - temporal validity affects ranking.
+     * Previously validity was display-only (staleness markers in context).
+     * Now volatile entries get a freshness-dependent penalty because stale
+     * volatile data is likely outdated. expires_when gets a milder penalty.
+     * Persistent entries (default) are unaffected. */
+  if (validity && created_at > 0.0) {
+    double age_days = (epoch_now() - created_at) / 86400.0;
+    if (age_days < 0) age_days = 0;
+    if (strcmp(validity, "volatile") == 0) {
+      /* Volatile: 2-week half-life, range [0.5, 1.0] */
+      double freshness = exp(-age_days / 14.0);
+      composite *= 0.5 + 0.5 * freshness;
+    } else if (strncmp(validity, "expires_when:", 13) == 0) {
+      /* Conditional expiry: 2-month half-life, range [0.7, 1.0] */
+      double freshness = exp(-age_days / 60.0);
+      composite *= 0.7 + 0.3 * freshness;
+    }
+    /* "session" validity entries should have been cleaned up already,
+     * but if present, treat like volatile with harsh penalty */
+    else if (strcmp(validity, "session") == 0) {
+      double freshness = exp(-age_days / 1.0);
+      composite *= 0.3 + 0.7 * freshness;
+    }
+  }
+
+  /* Soft temporal bonus for recently-active entries.
+     * Uses the most recent activity timestamp (last_accessed or created_at)
+     * to give recently-used memories a mild tiebreaker advantage.
+     * Default recency_bonus=0.08 (8% boost for brand-new entries).
      *
      * Formula: composite *= 1.0 + bonus * exp(-age_days / 30.0)
-     * At age=0:  multiplier = 1.0 + bonus (e.g., 1.1 with bonus=0.1)
-     * At age=30: multiplier ~= 1.0 + bonus*0.37
+     * At age=0:  multiplier = 1.08 (8% boost)
+     * At age=30: multiplier ~= 1.03 (3% boost)
      * At age=90: multiplier ~= 1.0 (essentially no boost) */
   if (recency_bonus > 0.0f && created_at > 0.0) {
-    double age_days = (epoch_now() - created_at) / 86400.0;
+    /* P3: Use most recent activity, not just creation time */
+    double ref_time = created_at;
+    if (last_accessed > ref_time) ref_time = last_accessed;
+    double age_days = (epoch_now() - ref_time) / 86400.0;
     if (age_days < 0) age_days = 0;
     composite *= 1.0 + (double)recency_bonus * exp(-age_days / 30.0);
   }
@@ -1304,7 +1348,38 @@ static double score_entry_hybrid(const char *key, const char *value,
      *   With exponent=1.0, a veteran (rel=0.25, vs=0.95 → 0.24) beats
      *   a new memory (rel=0.40, vs=0.50 → 0.20) despite lower relevance.
      *   With exponent=0.3, new memory wins (0.40×0.81=0.32 vs 0.25×0.99=0.25). */
-  double vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
+  /* P1: Time-weighted Bayesian validation score.
+     * When vscore_halflife > 0 and we have timestamps, decay old evidence
+     * so recent hits/misses count more than old ones. This handles the
+     * "was good before, bad now" case - a memory with 10 old hits but
+     * 3 recent misses will see its effective vscore drop because old hits
+     * decay while recent misses remain at full weight.
+     *
+     * Half-life of 90 days means evidence from 90 days ago counts at 50%,
+     * from 180 days ago at 25%, etc. With no timestamps (legacy data),
+     * falls back to the flat Beta posterior. */
+  double vscore;
+  if (vscore_halflife > 0.0f &&
+      (recall_hits > 0 || recall_misses > 0) &&
+      (last_hit_at > 0.0 || last_miss_at > 0.0)) {
+    double now = epoch_now();
+    double ln2 = 0.693147180559945;
+    double eff_hits = (double)recall_hits;
+    double eff_misses = (double)recall_misses;
+    if (last_hit_at > 0.0 && recall_hits > 0) {
+      double age = (now - last_hit_at) / 86400.0;
+      if (age < 0) age = 0;
+      eff_hits *= exp(-age * ln2 / (double)vscore_halflife);
+    }
+    if (last_miss_at > 0.0 && recall_misses > 0) {
+      double age = (now - last_miss_at) / 86400.0;
+      if (age < 0) age = 0;
+      eff_misses *= exp(-age * ln2 / (double)vscore_halflife);
+    }
+    vscore = (eff_hits + 1.0) / (eff_hits + eff_misses + 2.0);
+  } else {
+    vscore = (recall_hits + 1.0) / (recall_hits + recall_misses + 2.0);
+  }
   if (out_relevance) *out_relevance = relevance;
   if (out_importance) *out_importance = importance;
   if (vscore_exponent <= 0.0f)
@@ -1478,6 +1553,10 @@ memory_results_t memory_query(memory_t *m, const char *query, int max_results) {
                                   m->superseded_demotion,
                                   m->recency_bonus,
                                   m->failure_bias, ie->outcome,
+                                  ie->validity,
+                                  ie->last_hit_at, ie->last_miss_at,
+                                  ie->last_accessed,
+                                  m->vscore_halflife,
                                   &out_rel, &out_imp);
 
     /* Type filtering */
@@ -2229,20 +2308,44 @@ static int memory_increment_field(memory_t *m, const char *key,
     cJSON_AddNumberToObject(entry, field, 1);
   }
 
+  /* P1/P3: Set companion timestamp for temporal scoring.
+   * recall_hits -> last_hit_at, recall_misses -> last_miss_at,
+   * access_count -> last_accessed. These timestamps enable
+   * time-weighted vscore decay and last-accessed recency. */
+  double now = epoch_now();
+  const char *ts_field = NULL;
+  if (strcmp(field, "recall_hits") == 0)
+    ts_field = "last_hit_at";
+  else if (strcmp(field, "recall_misses") == 0)
+    ts_field = "last_miss_at";
+  else if (strcmp(field, "access_count") == 0)
+    ts_field = "last_accessed";
+  if (ts_field) {
+    cJSON *ts = cJSON_GetObjectItem(entry, ts_field);
+    if (ts)
+      cJSON_SetNumberValue(ts, now);
+    else
+      cJSON_AddNumberToObject(entry, ts_field, now);
+  }
+
   /* Write back */
   dump_json(path, entry);
   cJSON_Delete(entry);
 
-  /* P1: Update in-memory index counter */
+  /* P1: Update in-memory index counter + timestamp */
   {
     mem_index_entry_t *ie = mem_index_find(&m->idx, key);
     if (ie) {
-      if (strcmp(field, "recall_hits") == 0)
+      if (strcmp(field, "recall_hits") == 0) {
         ie->recall_hits++;
-      else if (strcmp(field, "recall_misses") == 0)
+        ie->last_hit_at = now;
+      } else if (strcmp(field, "recall_misses") == 0) {
         ie->recall_misses++;
-      else if (strcmp(field, "access_count") == 0)
+        ie->last_miss_at = now;
+      } else if (strcmp(field, "access_count") == 0) {
         ie->access_count++;
+        ie->last_accessed = now;
+      }
     }
   }
 
@@ -2275,6 +2378,7 @@ int memory_update_scores(memory_t *m, const char *key,
   /* Persist to disk -- load JSON, update fields, write back.
      * Previously only updated in-memory index, relying on a fragile
      * implicit contract with consolidation_carry_scores. */
+  double now = epoch_now();
   cJSON *entry = memory_load_entry_json(m, key);
   if (entry) {
     cJSON *rh = cJSON_GetObjectItem(entry, "recall_hits");
@@ -2290,6 +2394,18 @@ int memory_update_scores(memory_t *m, const char *key,
     else
       cJSON_AddNumberToObject(entry, "recall_misses", add_misses);
 
+    /* P1: Update evidence timestamps for time-weighted vscore */
+    if (add_hits > 0) {
+      cJSON *lh = cJSON_GetObjectItem(entry, "last_hit_at");
+      if (lh) cJSON_SetNumberValue(lh, now);
+      else cJSON_AddNumberToObject(entry, "last_hit_at", now);
+    }
+    if (add_misses > 0) {
+      cJSON *lm = cJSON_GetObjectItem(entry, "last_miss_at");
+      if (lm) cJSON_SetNumberValue(lm, now);
+      else cJSON_AddNumberToObject(entry, "last_miss_at", now);
+    }
+
     char fname[512];
     key_to_path(key, ".json", fname, sizeof(fname));
     char path[NASH_PATH_MAX];
@@ -2304,6 +2420,8 @@ int memory_update_scores(memory_t *m, const char *key,
   if (ie) {
     ie->recall_hits += add_hits;
     ie->recall_misses += add_misses;
+    if (add_hits > 0) ie->last_hit_at = now;
+    if (add_misses > 0) ie->last_miss_at = now;
   }
   pthread_mutex_unlock(&m->mtx);
   return ie ? 0 : -1;

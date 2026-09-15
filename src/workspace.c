@@ -118,18 +118,19 @@ int workspace_init_embeddings(workspace_t *ws, const char *type,
 void workspace_set_recall_config(workspace_t *ws, double min_score,
                                  float blend_semantic, float blend_substring,
                                  float vscore_exp, float superseded_demotion,
-                                 float recency_bonus, float failure_bias) {
+                                 float recency_bonus, float failure_bias,
+                                 float vscore_halflife) {
   if (!ws) return;
   if (ws->global)
     memory_set_recall_config(ws->global, min_score,
                              blend_semantic, blend_substring, vscore_exp,
                              superseded_demotion, recency_bonus,
-                             failure_bias);
+                             failure_bias, vscore_halflife);
   if (ws->workspace)
     memory_set_recall_config(ws->workspace, min_score,
                              blend_semantic, blend_substring, vscore_exp,
                              superseded_demotion, recency_bonus,
-                             failure_bias);
+                             failure_bias, vscore_halflife);
 }
 
 /* ── recall (the core merging operation) ─────────────── */
