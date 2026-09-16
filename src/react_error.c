@@ -253,12 +253,74 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
   ev.type = REACT_EVENT_ERROR;
   ev.step = step + 1;
 
-  /* Authentication error (HTTP 401/403) — can't be fixed by eviction */
+  /* Authentication error (HTTP 401/403) - reload credentials and retry.
+   * The user may have updated ~/.nash/credentials.toml with a fresh API
+   * key while the session is running.  Re-read it and retry once before
+   * giving up.  Guard: only reload once per react loop to avoid loops. */
   if (srv_err && (strstr(srv_err, "HTTP 401") || strstr(srv_err, "HTTP 403"))) {
+    if (*consecutive_null <= 1 && ctx->tools->session_dir &&
+        ctx->tools->cfg) {
+      /* Derive nash_dir from session_dir (../../ from sessions/<id>/) */
+      char nash_dir[NASH_PATH_MAX];
+      snprintf(nash_dir, sizeof(nash_dir), "%s/../..", ctx->tools->session_dir);
+      config_reload_credentials(ctx->tools->cfg, nash_dir);
+
+      char emsg[600];
+      snprintf(emsg, sizeof(emsg),
+               "Authentication failed - reloaded credentials, "
+               "retrying (update ~/.nash/credentials.toml if needed) - "
+               "%.350s", srv_err);
+      ev.message = emsg;
+      react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, emsg);
+
+      /* Brief pause to let user edit credentials if they see the message */
+      for (int ms = 0; ms < 3000 && !react_should_abort(ctx); ms += 100)
+        usleep(100000);
+      return 0; /* retry with reloaded credentials */
+    }
     ev.message = "Authentication failed - token expired or invalid, "
                  "please re-authenticate (e.g. gcloud auth login)";
     react_emit(on_event, userdata, &ev);
     journal_recovery_event(ctx, step, ev.message);
+    return 1;
+  }
+
+  /* Rate limit / quota exhaustion (HTTP 429) - reload credentials and retry.
+   * The user may switch to a different API key with fresh quota, or the
+   * rate limit window may have passed during the wait.  Longer backoff
+   * than auth errors since quota recovery takes more time. */
+  if (srv_err && strstr(srv_err, "HTTP 429")) {
+    if (*consecutive_null <= 2 && ctx->tools->session_dir &&
+        ctx->tools->cfg) {
+      /* Derive nash_dir from session_dir */
+      char nash_dir[NASH_PATH_MAX];
+      snprintf(nash_dir, sizeof(nash_dir), "%s/../..", ctx->tools->session_dir);
+      config_reload_credentials(ctx->tools->cfg, nash_dir);
+
+      int backoff_sec = (*consecutive_null + 1) * 10; /* 10s, 20s, 30s */
+      char emsg[600];
+      snprintf(emsg, sizeof(emsg),
+               "Rate limit / quota exceeded - reloaded credentials, "
+               "waiting %ds before retry %d/3 (update "
+               "~/.nash/credentials.toml to switch keys) - %.300s",
+               backoff_sec, *consecutive_null + 1, srv_err);
+      ev.message = emsg;
+      react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, emsg);
+
+      for (int ms = 0; ms < backoff_sec * 1000 && !react_should_abort(ctx);
+           ms += 100)
+        usleep(100000);
+      return 0; /* retry */
+    }
+    char emsg[600];
+    snprintf(emsg, sizeof(emsg),
+             "Rate limit / quota exceeded after retries - "
+             "giving up - %.500s", srv_err);
+    ev.message = emsg;
+    react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, emsg);
     return 1;
   }
 

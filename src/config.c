@@ -2087,15 +2087,75 @@ int config_load_credentials(config_t *cfg, const char *nash_dir) {
   return 0;
 }
 
+int config_reload_credentials(config_t *cfg, const char *nash_dir) {
+  char path[NASH_PATH_MAX];
+  snprintf(path, sizeof(path), "%s/credentials.toml", nash_dir);
+
+  struct stat st;
+  if (stat(path, &st) != 0) return 0; /* no credentials file */
+
+  FILE *f = fopen(path, "r");
+  if (!f) return 0;
+
+  char errbuf[256];
+  toml_table_t *root = toml_parse_file(f, errbuf, sizeof(errbuf));
+  fclose(f);
+  if (!root) {
+    fprintf(stderr, "[config] credentials reload parse error: %s\n", errbuf);
+    return -1;
+  }
+
+  int updated = 0;
+  toml_table_t *providers_tbl = toml_table_in(root, "providers");
+  if (providers_tbl) {
+    for (int i = 0;; i++) {
+      const char *key = toml_key_in(providers_tbl, i);
+      if (!key) break;
+      toml_table_t *ptab = toml_table_in(providers_tbl, key);
+      if (!ptab) continue;
+
+      for (int j = 0; j < cfg->n_named_providers; j++) {
+        if (cfg->named_providers[j].name &&
+            strcmp(cfg->named_providers[j].name, key) == 0) {
+          toml_datum_t api_key = toml_string_in(ptab, "api_key");
+          if (api_key.ok && api_key.u.s) {
+            if (!cfg->named_providers[j].config.api_key_env) {
+              /* Create synthetic env var (same as config_load_credentials) */
+              char env_name[128];
+              snprintf(env_name, sizeof(env_name),
+                       "NASH_CRED_%s_API_KEY", key);
+              for (char *p = env_name; *p; p++)
+                if (*p >= 'a' && *p <= 'z') *p -= 32;
+              setenv(env_name, api_key.u.s, 1); /* OVERRIDE existing */
+              cfg->named_providers[j].config.api_key_env = xstrdup(env_name);
+            } else {
+              /* Override the existing env var with the new value */
+              setenv(cfg->named_providers[j].config.api_key_env,
+                     api_key.u.s, 1); /* OVERRIDE existing */
+            }
+            updated++;
+            free(api_key.u.s);
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  toml_free(root);
+  if (updated > 0)
+    fprintf(stderr, "[config] reloaded %d credential(s) from %s\n", updated, path);
+  return 0;
+}
+
 void config_scrub_credential_env(const config_t *cfg) {
-  /* SECURITY: Remove credential env vars set by config_load_credentials().
-     * Call this after all provider_new() calls that need these vars.
-     * Providers copy the key at init time, so the env var is not needed
-     * after creation.  This prevents leaking API keys to child processes
-     * (shell_exec, git) and via /proc/PID/environ.
-     *
-     * In daemon mode, call this after all initial providers are created.
-     * Agent providers created later will need their own env setup. */
+  /* SECURITY: Remove NASH_CRED_* env vars set by config_load_credentials().
+     * Providers resolve API keys lazily via getenv() at each request,
+     * so scrubbing NASH_CRED_* vars means credentials.toml keys are
+     * only available during the initial provider creation window.
+     * User-set env vars (OPENAI_API_KEY, etc.) are NOT scrubbed here.
+     * config_reload_credentials() can re-set these if needed during
+     * error recovery (e.g. after the user updates credentials.toml). */
   for (int i = 0; i < cfg->n_named_providers; i++) {
     const char *env_name = cfg->named_providers[i].config.api_key_env;
     if (env_name && strncmp(env_name, "NASH_CRED_", 10) == 0) {

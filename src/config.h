@@ -508,6 +508,14 @@ int config_resolve_provider(const config_t *cfg, const char *override_name,
  * API key precedence: env var > credentials.toml > config.toml. */
 int config_load_credentials(config_t *cfg, const char *nash_dir);
 
+/* Reload credentials at runtime - re-reads credentials.toml and OVERRIDES
+ * existing env vars.  Called by error recovery when authentication or quota
+ * errors occur, allowing the user to update API keys in credentials.toml
+ * while the session is running.  Unlike config_load_credentials() which
+ * uses setenv(overwrite=0), this uses setenv(overwrite=1).
+ * Returns 0 on success, -1 on error. */
+int config_reload_credentials(config_t *cfg, const char *nash_dir);
+
 /* SECURITY: Remove NASH_CRED_* env vars set by config_load_credentials().
  * Call after provider_new() to prevent API keys from leaking to child
  * processes (shell_exec, git) and /proc/PID/environ.
