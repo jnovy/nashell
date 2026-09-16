@@ -286,7 +286,30 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
       }
     }
     if (!looks_like_overflow) {
-      /* Non-context HTTP 400 - show the actual error, not a generic msg */
+      /* Recoverable sub-type: unsupported sampling parameters.
+       * Reasoning models (OpenAI o-series, gpt-5.x) reject non-default
+       * temperature/top_p with HTTP 400.  Recovery: enable
+       * strip_sampling_params so the next request omits them.
+       * One-shot: if already stripping, this 400 is about something
+       * else - fall through to the non-recoverable path. */
+      if (ctx->provider && !ctx->provider->cfg.strip_sampling_params &&
+          (strcasestr(srv_err, "temperature") ||
+           strcasestr(srv_err, "top_p") ||
+           strcasestr(srv_err, "top_k"))) {
+        ctx->provider->cfg.strip_sampling_params = 1;
+        char emsg[600];
+        snprintf(emsg, sizeof(emsg),
+                 "HTTP 400 - unsupported sampling parameter, "
+                 "stripping temperature/top_p and retrying - %.400s",
+                 srv_err);
+        ev.message = emsg;
+        react_emit(on_event, userdata, &ev);
+        journal_recovery_event(ctx, step, emsg);
+        *consecutive_null = 0;
+        return 0; /* retry with modified config */
+      }
+
+      /* Non-recoverable HTTP 400 - show the actual error */
       char emsg[600];
       snprintf(emsg, sizeof(emsg),
                "HTTP 400 (not a context overflow) - %.500s", srv_err);
