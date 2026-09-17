@@ -69,8 +69,49 @@ typedef struct tool_filter_t {
   int n_descs;
 } tool_filter_t;
 
-/* Session context passed to all tools */
+/* ---- Middleware: pre/post tool dispatch hooks ---- */
+
+/* Maximum registered middleware entries (process-global). */
+#define TOOL_MIDDLEWARE_MAX 16
+
+/* Forward declaration - tool_ctx_t is defined below. */
+struct tool_ctx_struct;
+
+/* Pre-hook: called before tool handler dispatch.
+ * Return 1 to allow execution, 0 to block.
+ * On block, write a heap-allocated message into *block_msg (caller frees)
+ * or leave it NULL for a generic "Blocked by middleware" error. */
+typedef int (*tool_pre_hook_fn)(struct tool_ctx_struct *ctx,
+                                const char *action, cJSON *params,
+                                char **block_msg);
+
+/* Post-hook: called after tool handler returns.
+ * May inspect or mutate the result (e.g. append hints to result->meta).
+ * Returns a heap-allocated string to append to the tool result text,
+ * or NULL for no annotation. Caller frees. */
+typedef char *(*tool_post_hook_fn)(struct tool_ctx_struct *ctx,
+                                   const char *action, cJSON *params,
+                                   tool_result_t *result);
+
+/* Middleware descriptor. Registered process-globally, sorted by priority. */
 typedef struct {
+  const char *name;          /* e.g. "read_before_edit", "auto_build" */
+  tool_pre_hook_fn pre_hook; /* NULL = no pre-hook */
+  tool_post_hook_fn post_hook; /* NULL = no post-hook */
+  int priority;              /* lower = runs first (0 = highest) */
+} tool_middleware_t;
+
+/* Register a middleware entry. Returns 0 on success, -1 if registry full. */
+int tools_middleware_register(const tool_middleware_t *mw);
+
+/* Remove all registered middleware (for testing or reset). */
+void tools_middleware_clear(void);
+
+/* Return the number of registered middleware entries. */
+int tools_middleware_count(void);
+
+/* Session context passed to all tools */
+typedef struct tool_ctx_struct {
   store_t *store;
   journal_t *journal;
   memory_t *memory;     /* long-term memory store (.memory/) — points to active layer */

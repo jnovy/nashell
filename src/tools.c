@@ -1866,7 +1866,45 @@ void tool_free_deferred_consolidations(tool_ctx_t *ctx) {
 /* SearXNG cleanup moved to searxng.c */
 
 
-/* Handler function pointer type — used by dispatch_handler() below. */
+/* ---- Middleware registry (process-global, like plugin registry) ---- */
+
+static tool_middleware_t mw_registry[TOOL_MIDDLEWARE_MAX];
+static int mw_count = 0;
+
+int tools_middleware_register(const tool_middleware_t *mw) {
+  if (!mw || !mw->name) return -1;
+  if (mw_count >= TOOL_MIDDLEWARE_MAX) return -1;
+  /* Insert sorted by priority (lower = earlier). Stable: append at end of
+   * same-priority block so registration order is preserved within a tier. */
+  int pos = mw_count;
+  for (int i = 0; i < mw_count; i++) {
+    if (mw->priority < mw_registry[i].priority) {
+      pos = i;
+      break;
+    }
+  }
+  if (pos < mw_count)
+    memmove(&mw_registry[pos + 1], &mw_registry[pos],
+            (mw_count - pos) * sizeof(tool_middleware_t));
+  mw_registry[pos] = *mw;
+  mw_count++;
+  nash_log("[middleware] registered '%s' (priority %d, pre=%s post=%s)",
+           mw->name, mw->priority,
+           mw->pre_hook ? "yes" : "no",
+           mw->post_hook ? "yes" : "no");
+  return 0;
+}
+
+void tools_middleware_clear(void) {
+  mw_count = 0;
+}
+
+int tools_middleware_count(void) {
+  return mw_count;
+}
+
+
+/* Handler function pointer type - used by dispatch_handler() below. */
 typedef tool_result_t (*tool_handler_fn)(tool_ctx_t *, cJSON *);
 
 /* ── Parameter definitions for core tools ─────────────────────────── */
@@ -2092,8 +2130,46 @@ static int dispatch_handler(tool_ctx_t *ctx, const char *action, cJSON *params,
     free(ealias);
     return 1; /* dispatched (with error) */
   }
+  /* ---- Pre-hook chain: middleware can block dispatch ---- */
+  for (int i = 0; i < mw_count; i++) {
+    if (!mw_registry[i].pre_hook) continue;
+    char *block_msg = NULL;
+    if (!mw_registry[i].pre_hook(ctx, action, params, &block_msg)) {
+      /* Hook blocked execution */
+      const char *emsg = block_msg ? block_msg
+                                   : "Blocked by middleware";
+      *out = tools_make_error(emsg);
+      char *bh = store_save(ctx->store, emsg);
+      char *ba = bh ? tool_register_alias(ctx, bh) : NULL;
+      tool_journal(ctx, action, params, ba, 0, 0, emsg, NULL);
+      nash_log("[middleware] '%s' blocked tool '%s'",
+               mw_registry[i].name, action);
+      free(bh);
+      free(ba);
+      free(block_msg);
+      return 1; /* dispatched (blocked) */
+    }
+    free(block_msg); /* allow path: discard any message */
+  }
+
   /* Call the handler */
   *out = handler(ctx, params);
+
+  /* ---- Post-hook chain: middleware can annotate results ---- */
+  for (int i = 0; i < mw_count; i++) {
+    if (!mw_registry[i].post_hook) continue;
+    char *annotation = mw_registry[i].post_hook(ctx, action, params, out);
+    if (annotation) {
+      /* Append annotation to result meta as "middleware_<name>" key */
+      if (out->meta) {
+        char key[64];
+        snprintf(key, sizeof(key), "mw_%.50s", mw_registry[i].name);
+        cJSON_AddStringToObject(out->meta, key, annotation);
+      }
+      free(annotation);
+    }
+  }
+
   /* Fallback journal if handler didn't call tool_journal() */
   if (!ctx->journal_done) {
     const char *err = NULL;
