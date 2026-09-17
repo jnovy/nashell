@@ -82,6 +82,7 @@ static llm_msg_importance_t llm_importance_for_type(llm_msg_type_t type) {
     case LLM_MSG_EVICTION_SUMMARY:
     case LLM_MSG_PINNED:
     case LLM_MSG_PREV_RESULT:
+    case LLM_MSG_WORKSPACE_POLICY:
       return LLM_MSG_IMPORTANCE_HIGH;
     /* Plan-then-shed preamble: these inform planning but become
          * dead weight after plan() executes. Start NORMAL so they

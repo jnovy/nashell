@@ -67,6 +67,9 @@ int react_checkpoint_restore(react_ctx_t *ctx, llm_chat_t *chat,
     free(pinned);
   }
 
+  /* Workspace policy files (CLAUDE.md, AGENT.md, SKILL.md, etc.) */
+  react_inject_workspace_policy(chat);
+
   /* Step 3: Repo map injection (matches react_build_context) */
   {
     int do_repomap = ctx->flags.inject_repomap;

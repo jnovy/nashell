@@ -468,6 +468,11 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
 void react_inject_memory_and_pinned(llm_chat_t *chat, tool_ctx_t *tools,
                                     char **out_mem_summary, char **out_pinned);
 
+/* Scan CWD for workspace policy files (CLAUDE.md, AGENT.md, SKILL.md,
+ * .cursorrules, etc.) and inject their content as a single
+ * LLM_MSG_WORKSPACE_POLICY message.  No-op if no files found. */
+void react_inject_workspace_policy(llm_chat_t *chat);
+
 /* ── Error Recovery ──────────────────────────────────── */
 
 /* Emergency eviction — proportionally removes oldest evictable messages

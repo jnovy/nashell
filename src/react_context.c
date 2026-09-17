@@ -580,6 +580,80 @@ void react_inject_recall_context(llm_chat_t *chat, react_ctx_t *ctx,
   memory_results_free(&all_memories);
 }
 
+/* Workspace policy file auto-detection and injection.
+ * Scans the CWD for well-known policy/instruction files (CLAUDE.md,
+ * AGENT.md, SKILL.md, .cursorrules, etc.) and injects their content
+ * into the chat context so the LLM follows project-specific conventions.
+ *
+ * Motivated by arXiv 2609.14992 (MTAC-IFBench): policy files are followed
+ * more reliably than inline constraints, and C-ISR drops to 0% after 6 turns
+ * without persistent injection.  Also arXiv 2609.00006: 9/11 agent systems
+ * converged on SKILL.md-style workspace files. */
+#define POLICY_MAX_PER_FILE   8192   /* max chars per policy file */
+#define POLICY_MAX_TOTAL     16384   /* max chars across all files combined */
+
+static const char *policy_filenames[] = {
+  "CLAUDE.md",
+  "AGENT.md",
+  "AGENTS.md",
+  "SKILL.md",
+  "NASH.md",
+  "CONVENTIONS.md",
+  "CODING_GUIDELINES.md",
+  "COPILOT.md",
+  ".cursorrules",
+  ".github/copilot-instructions.md",
+  NULL
+};
+
+void react_inject_workspace_policy(llm_chat_t *chat) {
+  char cwd[NASH_PATH_MAX];
+  if (!getcwd(cwd, sizeof(cwd))) return;
+
+  str_t msg = str_new(4096);
+  int found = 0;
+  size_t total = 0;
+
+  for (int i = 0; policy_filenames[i]; i++) {
+    char path[NASH_PATH_MAX];
+    snprintf(path, sizeof(path), "%s/%s", cwd, policy_filenames[i]);
+
+    char *content = slurp_file(path, NULL);
+    if (!content || !content[0]) {
+      free(content);
+      continue;
+    }
+
+    /* Truncate oversized files */
+    size_t clen = strlen(content);
+    if (clen > POLICY_MAX_PER_FILE) {
+      content[POLICY_MAX_PER_FILE] = '\0';
+      clen = POLICY_MAX_PER_FILE;
+    }
+
+    /* Check total budget */
+    if (total + clen > POLICY_MAX_TOTAL) {
+      free(content);
+      break;
+    }
+
+    if (found == 0)
+      str_append_cstr(&msg, "[WORKSPACE POLICY]\n"
+                            "The following project policy files were auto-detected "
+                            "in the workspace root. Follow these instructions.\n");
+
+    str_appendf(&msg, "\n--- %s ---\n%s\n", policy_filenames[i], content);
+    total += clen;
+    found++;
+    free(content);
+  }
+
+  if (found > 0)
+    llm_chat_add_typed(chat, "user", str_cstr(&msg), LLM_MSG_WORKSPACE_POLICY);
+
+  str_free(&msg);
+}
+
 void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
                          const char *user_query,
                          react_event_fn on_event, void *userdata) {
@@ -603,6 +677,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
     free(mem_summary);
     free(pinned);
   }
+
+  /* Workspace policy files (CLAUDE.md, AGENT.md, SKILL.md, etc.) */
+  react_inject_workspace_policy(chat);
 
   /* ── Repo Map: structural codebase context ─────────────────────
      * Aider-style repo map: symbol extraction → PageRank → elided rendering.
@@ -802,6 +879,9 @@ void react_build_context(react_ctx_t *ctx, llm_chat_t *chat,
           break;
         case LLM_MSG_MEMORY_HINT:
           tn = "ctx:associated";
+          break;
+        case LLM_MSG_WORKSPACE_POLICY:
+          tn = "ctx:workspace_policy";
           break;
         case LLM_MSG_REPO_MAP:
           tn = "ctx:repomap";

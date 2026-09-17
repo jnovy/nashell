@@ -55,6 +55,7 @@ typedef enum {
   LLM_MSG_REPO_MAP,         /* [REPO MAP] structural codebase context */
   LLM_MSG_TUI_VIEW,         /* [TUI VIEW CONTEXT] file user was viewing at query time */
   LLM_MSG_INFORM,            /* [SESSION STATE] lightweight INFORM block */
+  LLM_MSG_WORKSPACE_POLICY,  /* [WORKSPACE POLICY] auto-detected policy files */
 } llm_msg_type_t;
 
 /* Message importance level — controls eviction priority.
