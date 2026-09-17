@@ -226,6 +226,14 @@ typedef struct tool_ctx_struct {
   } failure_history[TOOL_FAILURE_WINDOW];
   int failure_head;     /* next write position in ring buffer */
   int failure_count;    /* total failures recorded (may exceed WINDOW) */
+
+  /* Read-before-edit enforcement: track files the agent has read
+   * (via file_read, grep_search, glob_search) so middleware can
+   * block file_edit on unread files.  Populated by mw_read_tracker
+   * post-hook; checked by mw_read_before_edit pre-hook. */
+#define READ_FILES_MAX 128
+  char *read_files[READ_FILES_MAX]; /* heap-allocated paths (freed at teardown) */
+  int n_read_files;
 } tool_ctx_t;
 
 /* Tool failure tracking (Paper 6 - Silent Failures).

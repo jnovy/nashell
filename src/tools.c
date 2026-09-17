@@ -79,6 +79,11 @@ void tool_ctx_reset_query(tool_ctx_t *ctx) {
   /* Free edit transaction save-points */
   tool_txn_clear(ctx);
 
+  /* Free read-files tracker (mw_builtin read-before-edit enforcement) */
+  for (int i = 0; i < ctx->n_read_files; i++)
+    free(ctx->read_files[i]);
+  ctx->n_read_files = 0;
+
   /* Free fire ledger */
   tool_fire_ledger_free(ctx);
 

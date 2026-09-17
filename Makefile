@@ -82,7 +82,8 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/predict.c \
           src/harness_metrics.c \
           src/fswatch_linux.c \
-          src/fswatch_noop.c
+          src/fswatch_noop.c \
+          src/mw_builtin.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 

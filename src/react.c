@@ -6,6 +6,7 @@
 #include "tui.h"     /* g_tui_active -- for condvar timeout escape hatch */
 #include "tools_internal.h"
 #include "tool_plugin.h" /* tool_plugin_run_cleanups */
+#include "mw_builtin.h"  /* mw_builtin_init */
 #include <sys/stat.h>   /* mkdir */
 #include <errno.h>      /* EEXIST */
 
@@ -994,6 +995,9 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
   /* Reset per-loop state */
   ctx->user_ask_used = 0;
   ctx->current_query = user_query;
+
+  /* Register built-in middleware hooks (idempotent - skips if already done) */
+  mw_builtin_init();
 
   /* Initialize mutable runtime state from provider config.
      * These values may be modified during the loop without violating
