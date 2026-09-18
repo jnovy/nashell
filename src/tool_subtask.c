@@ -274,6 +274,12 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   void *cb_data = ctx->on_event ? &ev_ctx : NULL;
   char *result = react_run(&child_react, effective_query, cb, cb_data);
 
+  /* Prevent stale abort flag from poisoning parent's subsequent LLM calls.
+   * When provider is shared (no temperature override), the child's abort
+   * state leaks into the parent - clear it unconditionally on return. */
+  if (child_provider == ctx->provider)
+    ctx->provider->abort_retry = 0;
+
   /* ── Restore parent TUI context ──────────────────────── */
   /* Emit a synthetic STEP_START so ui_event.c switches playbook_session_dir
      * back to the parent's session dir for subsequent parent events. */

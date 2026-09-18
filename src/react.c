@@ -1266,6 +1266,15 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
       if (react_should_abort(ctx)) {
         continue;
       }
+      /* Stale abort_retry without a pending pause (e.g. left over
+       * after a subtask death).  Clear the flag and retry the LLM
+       * call directly instead of burning through the 5-tier recovery
+       * cascade, which is designed for content/context issues and
+       * cannot fix a provider-level abort flag. */
+      if (ctx->provider->abort_retry) {
+        ctx->provider->abort_retry = 0;
+        continue;
+      }
       consecutive_null_responses++;
       int rc = react_handle_null_response(ctx, chat,
                                           &consecutive_null_responses, &total_400_errors,

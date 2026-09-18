@@ -1859,6 +1859,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
   }
 
 cleanup:
+  /* All abort paths (CURLE_ABORTED_BY_CALLBACK, provider_sleep abort)
+   * goto here without setting last_error.  Tag the error once so
+   * react.c journals "request aborted" instead of "(unknown error)". */
+  if (!result && !p->last_error && p->abort_retry)
+    str_replace(&p->last_error, "request aborted (pause/redirect)");
   str_free(&st.line_buf);
   str_free(&st.full_content);
   str_free(&st.tool_call_name);
