@@ -19,6 +19,8 @@
 #define PROVIDER_DEFAULT_MAX_RETRIES 10
 #define PROVIDER_DEFAULT_RETRY_BASE_SEC 10
 #define PROVIDER_DEFAULT_TIMEOUT 600 /* 10 min default if not configured */
+#define PROVIDER_CONNECT_TIMEOUT 30  /* max seconds to establish TCP connection */
+#define PROVIDER_STALL_TIMEOUT 120   /* abort streaming if <1 byte/s for this long */
 
 /* Resolve retry config: use provider_config_t values if set, else defaults */
 #define PROVIDER_MAX_RETRIES(p) ((p)->cfg.max_retries > 0 ? (p)->cfg.max_retries : PROVIDER_DEFAULT_MAX_RETRIES)
@@ -1299,13 +1301,15 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, str_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &response);
-    /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
-         * Also enable progress callback for abort-on-demand. */
+    /* Non-streaming: server sends nothing until generation is complete,
+     * so use a total timeout (CURLOPT_TIMEOUT) as the safety net.
+     * Also add a connection timeout to fail fast on unreachable servers. */
     {
       long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
                                             : PROVIDER_DEFAULT_TIMEOUT;
       curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
     }
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, (long)PROVIDER_CONNECT_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
@@ -1636,11 +1640,16 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-    /* FIX: Always set a timeout (default 600s) to prevent indefinite blocking.
-         * Also enable progress callback for abort-on-demand during streaming. */
-    long timeout = p->cfg.llm_timeout > 0 ? (long)p->cfg.llm_timeout
-                                          : PROVIDER_DEFAULT_TIMEOUT;
-    curl_easy_setopt(curl, CURLOPT_TIMEOUT, timeout);
+    /* Streaming: tokens flow continuously, so use low-speed detection
+     * instead of a total timeout. This catches dead/stalled servers
+     * (e.g. llama-server crashed mid-stream) within PROVIDER_STALL_TIMEOUT
+     * seconds, while allowing arbitrarily long generations that are
+     * actively producing data. CURLOPT_TIMEOUT is intentionally omitted
+     * here - a thinking model generating for 20+ minutes is legitimate
+     * as long as SSE events keep flowing. */
+    curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, (long)PROVIDER_CONNECT_TIMEOUT);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
+    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, (long)PROVIDER_STALL_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
@@ -1731,24 +1740,15 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     }
 
     if (res != CURLE_OK && !st.stopped) {
-      /* Don't retry on timeout — it means the LLM response is too long
-             * (e.g., runaway thinking), not a transient network error.
-             * Retrying would just burn another 300s+ per attempt. */
+      /* CURLE_OPERATION_TIMEDOUT from LOW_SPEED_LIMIT means the server
+       * stalled (no data for PROVIDER_STALL_TIMEOUT seconds) - this is
+       * a transient error worth retrying (server crash, network issue).
+       * Log it distinctly but let it fall through to normal retry logic. */
       if (res == CURLE_OPERATION_TIMEDOUT) {
-        nash_log("[provider] LLM call timed out after %lds "
-                 "(streaming_tokens=%d) — not retrying",
-                 timeout, st.streaming_token_count);
-        str_replace(&p->last_error, "LLM call timed out (response too long)");
-        free(p->last_error_request);
-        p->last_error_request = req_body;
-        req_body = NULL;
-        free(p->last_error_response);
-        p->last_error_response = (st.full_content.len > 0)
-                                   ? xstrdup(str_cstr(&st.full_content))
-                                 : (st.thinking_content.len > 0)
-                                   ? xstrdup(str_cstr(&st.thinking_content))
-                                   : NULL;
-        goto cleanup;
+        nash_log("[provider] stream stalled - no data received for %ds "
+                 "(tokens_so_far=%d, attempt %d/%d)",
+                 PROVIDER_STALL_TIMEOUT, st.streaming_token_count,
+                 attempt, PROVIDER_MAX_RETRIES(p));
       }
       int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
       nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
