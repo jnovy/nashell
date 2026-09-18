@@ -1243,6 +1243,20 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
                  ? 100.0 * (1.0 - (double)vstats.view_chars / (double)vstats.record_chars)
                  : 0.0);
     }
+    /* Propagate tool_call threading state from view back to the
+     * original chat record.  build_sse_result() writes updated
+     * last_tool_call_id / last_tool_calls_json to the prompt,
+     * which is the view when view_build() returned non-NULL.
+     * Without this, the chat record's tool_call state goes stale. */
+    if (view) {
+      free(chat->last_tool_call_id);
+      chat->last_tool_call_id = view->last_tool_call_id
+                                  ? xstrdup(view->last_tool_call_id) : NULL;
+      free(chat->last_tool_calls_json);
+      chat->last_tool_calls_json = view->last_tool_calls_json
+                                     ? xstrdup(view->last_tool_calls_json) : NULL;
+      chat->multi_tool_count = view->multi_tool_count;
+    }
     view_free(view);
 
     if (!response) {

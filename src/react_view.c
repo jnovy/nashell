@@ -178,8 +178,8 @@ llm_chat_t *view_build(const llm_chat_t *record, const view_policy_t *policy,
   }
 
   view->total_chars = view_chars;
-  view->last_tool_call_id = record->last_tool_call_id;
-  view->last_tool_calls_json = record->last_tool_calls_json;
+  view->last_tool_call_id = record->last_tool_call_id ? xstrdup(record->last_tool_call_id) : NULL;
+  view->last_tool_calls_json = record->last_tool_calls_json ? xstrdup(record->last_tool_calls_json) : NULL;
   view->multi_tool_count = record->multi_tool_count;
 
   free(tool_age);
@@ -192,6 +192,8 @@ llm_chat_t *view_build(const llm_chat_t *record, const view_policy_t *policy,
 
   if (msgs_shortened == 0) {
     free(view->msgs);
+    free(view->last_tool_call_id);
+    free(view->last_tool_calls_json);
     free(view);
     if (stats)
       stats->activated = 0;
@@ -214,5 +216,7 @@ void view_free(llm_chat_t *view) {
   }
 
   free(view->msgs); /* frees the combined msgs + orig block */
+  free(view->last_tool_call_id);
+  free(view->last_tool_calls_json);
   free(view);
 }
