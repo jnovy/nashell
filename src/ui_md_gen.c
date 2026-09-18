@@ -189,6 +189,21 @@ static const char *extract_desc(const char *tool, cJSON *params) {
     }
     return "user query";
   }
+  /* User redirect (ad-hoc prompt typed during inference) */
+  if (strcmp(tool, "redirect") == 0) {
+    const char *text_s = json_str(params, "text");
+    if (text_s) {
+      static char redir_desc[128];
+      const char *s = text_s;
+      const char *nl = strchr(s, '\n');
+      int len = nl ? (int)(nl - s) : (int)strlen(s);
+      if (len > 80) len = 80;
+      snprintf(redir_desc, sizeof(redir_desc), "%.*s%s",
+               len, s, (nl || (int)strlen(s) > 80) ? "..." : "");
+      return redir_desc;
+    }
+    return "user redirect";
+  }
   /* Memory recall context: show matched count summary */
   if (strcmp(tool, "memory_context") == 0) {
     static char mc_desc[128];

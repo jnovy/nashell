@@ -92,6 +92,21 @@ static void react_wait_for_redirect(react_ctx_t *ctx, llm_chat_t *chat,
   if (chat->n_msgs > 0)
     chat->msgs[chat->n_msgs - 1].importance = LLM_MSG_IMPORTANCE_NORMAL;
   free(inject_msg);
+
+  /* Journal the redirect so it appears in reactRX.md */
+  {
+    cJSON *rparams = cJSON_CreateObject();
+    cJSON_AddStringToObject(rparams, "text", redirect);
+    char *rhash = store_save(ctx->tools->store, redirect);
+    char *ralias = rhash ? tool_register_alias(ctx->tools, rhash) : NULL;
+    journal_append(ctx->tools->journal, ctx->tools->react_loop,
+                   step, "redirect", rparams, ralias,
+                   strlen(redirect), 0, NULL, NULL, 0);
+    free(rhash);
+    free(ralias);
+    cJSON_Delete(rparams);
+  }
+
   free(redirect);
   react_checkpoint_remove(ctx);
 }
