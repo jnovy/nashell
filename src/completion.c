@@ -673,13 +673,11 @@ void ui_state_complete_tab(ui_state_t *ui, int direction) {
   }
 
   if (r->count == 1) {
-    /* Single match: replace and add trailing space */
+    /* Single match: replace (no trailing space) */
     const char *match = r->candidates[0];
     int mlen = (int)strlen(match);
-    char with_space[NASH_PATH_MAX];
-    snprintf(with_space, sizeof(with_space), "%s ", match);
     replace_input(ui, r->replace_start, r->replace_len,
-                  with_space, mlen + 1);
+                  match, mlen);
     ui->dirty = 1;
     completion_result_free(r);
     return;

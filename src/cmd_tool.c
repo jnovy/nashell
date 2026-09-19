@@ -540,6 +540,19 @@ int cmd_tool(command_ctx_t *ctx, const char *args) {
   while (args && *args == ' ')
     args++;
 
+  /* Strip trailing whitespace into local buffer */
+  char buf[256] = {0};
+  if (args && args[0]) {
+    size_t len = strlen(args);
+    if (len >= sizeof(buf))
+      len = sizeof(buf) - 1;
+    memcpy(buf, args, len);
+    while (len > 0 && buf[len - 1] == ' ')
+      len--;
+    buf[len] = '\0';
+  }
+  args = buf;
+
   /* No args or "list" -> show tool list */
   if (!args || !args[0] || strcmp(args, "list") == 0)
     return cmd_tool_list(ctx);
