@@ -573,9 +573,22 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
     return tools_make_error("shell_exec requires a non-empty 'command' string. "
                             "Provide the shell command to execute.");
 
+  if (ctx->react_loop < 0 || ctx->react_loop > 10000 ||
+      ctx->step < -1 || ctx->step > 100000) {
+    nash_log("[BUG] shell_exec ENTRY: corrupted react_loop=%d step=%d "
+             "cfg=%p ctx=%p", ctx->react_loop, ctx->step,
+             (void *)ctx->cfg, (void *)ctx);
+  }
+
   str_t out = str_new(4096);
   char *argv[] = {"sh", "-c", (char *)command, NULL};
   int cfg_timeout = ctx->cfg ? ctx->cfg->shell_timeout : 30;
+  if (cfg_timeout < 1 || cfg_timeout > 86400) {
+    nash_log("[BUG] shell_exec: cfg->shell_timeout=%d looks corrupted "
+             "(cfg=%p ctx=%p), using 300", cfg_timeout,
+             (void *)ctx->cfg, (void *)ctx);
+    cfg_timeout = 300;
+  }
   int timeout = json_int(params, "timeout", cfg_timeout);
   if (timeout < 1) timeout = 1;
   if (timeout > cfg_timeout * 10) timeout = cfg_timeout * 10;
@@ -591,12 +604,17 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   clock_gettime(CLOCK_MONOTONIC, &t_end);
   long elapsed_ms = (t_end.tv_sec - t_start.tv_sec) * 1000L +
                     (t_end.tv_nsec - t_start.tv_nsec) / 1000000L;
-  if (r.aborted)
+  if (r.aborted) {
     str_appendf(&out, "\n[ABORTED: user submitted new query]\n");
-  else if (r.timed_out)
-    str_appendf(&out, "\n[TIMEOUT: killed after %ds]\n", timeout);
-  else if (r.output_capped)
+    nash_log("[shell_exec] aborted after %ldms: %.80s", elapsed_ms, command);
+  } else if (r.timed_out) {
+    str_appendf(&out, "\n[TIMEOUT: killed after %lds (limit %ds)]\n",
+                elapsed_ms / 1000, timeout);
+    nash_log("[shell_exec] timeout after %ldms (limit %ds): %.80s",
+             elapsed_ms, timeout, command);
+  } else if (r.output_capped) {
     str_appendf(&out, "\n[OUTPUT CAPPED at %d bytes]\n", max_out);
+  }
   int exit_code = r.exit_code;
 
   /* Store to shared store */
@@ -604,6 +622,9 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
 
   /* Register alias */
   char *alias = tool_register_alias(ctx, hash ? hash : "");
+
+  int _rl_after_alias = ctx->react_loop;
+  int _st_after_alias = ctx->step;
 
   cJSON *meta = cJSON_CreateObject();
   cJSON_AddNumberToObject(meta, "exit_code", exit_code);
@@ -652,6 +673,12 @@ static tool_result_t tool_shell_exec(tool_ctx_t *ctx, cJSON *params) {
   }
 
   tools_inject_thought(ctx, params);
+  if (ctx->react_loop != _rl_after_alias || ctx->step != _st_after_alias) {
+    nash_log("[BUG] shell_exec CORRUPTED between alias and journal: "
+             "was rl=%d st=%d now rl=%d st=%d ctx=%p",
+             _rl_after_alias, _st_after_alias,
+             ctx->react_loop, ctx->step, (void *)ctx);
+  }
   tool_journal(ctx, "shell_exec", params, alias,
                out.len, out.data ? count_lines(out.data) : 0, exit_code == 0 ? NULL : "non-zero exit", NULL);
 
@@ -2158,7 +2185,14 @@ static int dispatch_handler(tool_ctx_t *ctx, const char *action, cJSON *params,
   }
 
   /* Call the handler */
+  int _pre_rl = ctx->react_loop, _pre_st = ctx->step;
   *out = handler(ctx, params);
+  if (ctx->react_loop != _pre_rl || ctx->step != _pre_st) {
+    nash_log("[BUG] dispatch_handler: ctx corrupted by '%s': "
+             "before rl=%d st=%d after rl=%d st=%d ctx=%p",
+             action, _pre_rl, _pre_st,
+             ctx->react_loop, ctx->step, (void *)ctx);
+  }
 
   /* ---- Post-hook chain: middleware can annotate results ---- */
   for (int i = 0; i < mw_count; i++) {

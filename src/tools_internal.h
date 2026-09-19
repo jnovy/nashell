@@ -24,7 +24,15 @@ static inline void tool_journal(tool_ctx_t *ctx, const char *tool,
                                 size_t size, int lines,
                                 const char *error, const char *tool_call_id) {
   ctx->journal_done = 1;
-  journal_append(ctx->journal, ctx->react_loop, ctx->step,
+  int rl = ctx->react_loop;
+  int st = ctx->step;
+  if (rl < 0 || rl > 10000 || st < -1 || st > 100000) {
+    nash_log("[BUG] tool_journal: corrupted ctx fields: react_loop=%d step=%d "
+             "tool=%s ctx=%p", rl, st, tool, (void *)ctx);
+    rl = 0;
+    st = 0;
+  }
+  journal_append(ctx->journal, rl, st,
                  tool, params, ref, size, lines, error, tool_call_id,
                  ctx->start_ts);
 }
