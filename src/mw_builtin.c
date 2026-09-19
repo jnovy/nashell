@@ -69,6 +69,13 @@ static const char *get_ext(const char *path) {
 
 /* ---- Hook 1: Destructive Operation Guard ------------------------------ */
 
+static int is_path_char(char c) {
+  return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+         (c >= '0' && c <= '9') || c == '.' || c == '_' || c == '-';
+}
+
+enum { DG_SUBSTR = 0, DG_PATH_BOUNDARY = 1, DG_NO_SUBDIR = 2 };
+
 static int mw_destructive_guard_pre(struct tool_ctx_struct *ctx,
                                     const char *action, cJSON *params,
                                     char **block_msg) {
@@ -78,31 +85,38 @@ static int mw_destructive_guard_pre(struct tool_ctx_struct *ctx,
   const char *cmd = json_str(params, "command");
   if (!cmd) return 1;
 
-  /* Patterns that indicate catastrophic operations.
-   * These are substring checks - intentionally broad for safety. */
-  static const char *dangerous[] = {
-    "rm -rf /",
-    "rm -rf ~",
-    "rm -rf $HOME",
-    "mkfs.",
-    "dd if=/dev/",
-    "> /dev/sd",
-    "> /dev/nvme",
-    ":(){ :|:& };:",
-    "chmod -R 777 /",
-    NULL
+  static const struct {
+    const char *pattern;
+    int mode;
+  } dangerous[] = {
+    {"rm -rf /",        DG_PATH_BOUNDARY},
+    {"rm -rf ~",        DG_NO_SUBDIR},
+    {"rm -rf $HOME",    DG_NO_SUBDIR},
+    {"mkfs.",           DG_SUBSTR},
+    {"dd if=/dev/",     DG_SUBSTR},
+    {"> /dev/sd",       DG_SUBSTR},
+    {"> /dev/nvme",     DG_SUBSTR},
+    {":(){ :|:& };:",   DG_SUBSTR},
+    {"chmod -R 777 /",  DG_PATH_BOUNDARY},
+    {NULL, 0}
   };
 
-  for (int i = 0; dangerous[i]; i++) {
-    if (strstr(cmd, dangerous[i])) {
-      char buf[256];
-      snprintf(buf, sizeof(buf),
-               "Blocked: command matches destructive pattern '%s'. "
-               "If this is intentional, break it into safer steps.",
-               dangerous[i]);
-      *block_msg = xstrdup(buf);
-      return 0; /* block */
-    }
+  for (int i = 0; dangerous[i].pattern; i++) {
+    const char *hit = strstr(cmd, dangerous[i].pattern);
+    if (!hit) continue;
+    char next = hit[strlen(dangerous[i].pattern)];
+    if (dangerous[i].mode == DG_PATH_BOUNDARY && is_path_char(next))
+      continue;
+    if (dangerous[i].mode == DG_NO_SUBDIR && next == '/')
+      continue;
+
+    char buf[256];
+    snprintf(buf, sizeof(buf),
+             "Blocked: command matches destructive pattern '%s'. "
+             "If this is intentional, break it into safer steps.",
+             dangerous[i].pattern);
+    *block_msg = xstrdup(buf);
+    return 0; /* block */
   }
   return 1; /* allow */
 }
