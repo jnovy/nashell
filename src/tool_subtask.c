@@ -47,6 +47,12 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   TOOL_REQ_STR(params, "query", query);
   TOOL_OPT_STR(params, "context", context_level);
 
+  const char *sdir = ctx->session_dir;
+  if (!sdir && ctx->journal)
+    sdir = journal_session_dir(ctx->journal);
+  if (!sdir)
+    return tools_make_error("Sub-task requires a session directory");
+
   /* Optional temperature override for the child's provider */
   double temp_override = -1.0;
   {
@@ -90,8 +96,8 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     /* Only count /subtask_ within the session hierarchy, not in the
          * workspace prefix.  E.g. /projects/subtask_tests/.sessions/123/subtask_0
          * should yield depth=1, not depth=2. */
-    const char *base = strstr(ctx->session_dir, "/.sessions/");
-    const char *p = base ? base : ctx->session_dir;
+    const char *base = strstr(sdir, "/.sessions/");
+    const char *p = base ? base : sdir;
     while ((p = strstr(p, "/subtask_")) != NULL) {
       depth++;
       p += 9;
@@ -112,7 +118,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   /* ── Create child session directory under parent's session ──── */
   int seq = atomic_fetch_add(&subtask_counter, 1);
   char child_dir[4096];
-  snprintf(child_dir, sizeof(child_dir), "%s/subtask_%d", ctx->session_dir, seq);
+  snprintf(child_dir, sizeof(child_dir), "%s/subtask_%d", sdir, seq);
   if (mkdir(child_dir, 0755) != 0 && errno != EEXIST) {
     char err[256];
     snprintf(err, sizeof(err), "Failed to create subtask directory: %s", strerror(errno));
@@ -267,7 +273,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     .parent_cb = ctx->on_event,
     .parent_data = ctx->on_event_data,
     .child_dir = child_dir,
-    .parent_dir = ctx->session_dir,
+    .parent_dir = sdir,
     .parent_loop = ctx->react_loop,
   };
   react_event_fn cb = ctx->on_event ? subtask_event_cb : NULL;
@@ -286,7 +292,7 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
   if (ctx->on_event) {
     react_event_t restore = {0};
     restore.type = REACT_EVENT_STEP_START;
-    restore.session_dir = ctx->session_dir;
+    restore.session_dir = sdir;
     restore.react_loop = ctx->react_loop;
     restore.step = ctx->step;
     restore.max_steps = 0; /* won't trigger auto-nav (step > 1) */
