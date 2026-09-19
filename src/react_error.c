@@ -489,7 +489,53 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     }
   }
 
-  /* 5-tier retry strategy for HTTP 500 / NULL responses */
+  /* 5-tier retry strategy for HTTP 500 / NULL responses.
+   *
+   * IMPORTANT: Transient errors (connection failures, server errors) must
+   * NEVER trigger context-destructive recovery (tiers 1-3).  Removing
+   * messages or stripping the scratchpad cannot fix a network outage -
+   * it only destroys useful context.  Detect transient errors first and
+   * handle them with plain retries + increasing backoff. */
+
+  /* Detect transient (connection/server) errors that are unrelated to
+   * request content or context size.  These should only be retried,
+   * never trigger context eviction or scratchpad stripping. */
+  int is_transient = !srv_err                         /* unknown error */
+    || strstr(srv_err, "curl error:")                 /* network/DNS/timeout */
+    || strstr(srv_err, "HTTP 5")                      /* server errors 5xx */
+    || strstr(srv_err, "get_endpoint returned NULL")  /* config issue */
+    || strstr(srv_err, "build_request");              /* request build error */
+
+  if (is_transient) {
+    /* Connection/server error - retry with increasing backoff.
+     * Allow more attempts than content errors since each retry has a
+     * real chance of succeeding once connectivity is restored. */
+    if (*consecutive_null >= 10) {
+      ev.message = "LLM connection/server error - retries exhausted after "
+                   "10 attempts, giving up";
+      react_emit(on_event, userdata, &ev);
+      journal_recovery_event(ctx, step, ev.message);
+      return 1;
+    }
+    if (react_should_abort(ctx)) return 1;
+    int backoff_ms = *consecutive_null * 3000; /* 3s, 6s, 9s, ... 30s */
+    char rmsg[256];
+    snprintf(rmsg, sizeof(rmsg),
+             "LLM connection/server error - retry %d/10 "
+             "(backoff %dms, no context changes) - %.128s",
+             *consecutive_null, backoff_ms,
+             srv_err ? srv_err : "unknown");
+    ev.message = rmsg;
+    react_emit(on_event, userdata, &ev);
+    journal_recovery_event(ctx, step, rmsg);
+    for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
+      usleep(100000);
+    return 0; /* retry without touching context */
+  }
+
+  /* Content/context errors - use tiered recovery with escalating
+   * context reduction.  Only reached for errors that are NOT transient
+   * (e.g. unparseable response, unknown content-related issues). */
   if (*consecutive_null >= 6) {
     ev.message = "LLM server error - all recovery tiers exhausted, giving up";
     react_emit(on_event, userdata, &ev);
