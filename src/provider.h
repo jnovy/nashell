@@ -4,6 +4,8 @@
 #include "llm.h"
 #include "cJSON.h"
 #include <stdatomic.h>
+#include <time.h>
+#include <curl/curl.h>
 
 /* ── Provider types ─────────────────────────────────────────────── */
 
@@ -107,6 +109,11 @@ struct provider {
 
   /* ── Abort flag for interruptible retry sleeps ── */
   _Atomic int abort_retry; /* set to 1 to cancel retry sleep early */
+
+  /* ── Streaming stall detection (progress callback state) ── */
+  curl_off_t _stall_dl_mark;
+  struct timespec _stall_since;
+  int _stall_body_seen;
 
   /* ── Error diagnostics (populated on error, read by react.c) ── */
   char *last_error;          /* error message (curl error, HTTP error, etc.) */

@@ -42,30 +42,60 @@ static int provider_sleep(provider_t *p, int seconds) {
   return p->abort_retry ? 1 : 0;
 }
 
-/* FIX: Curl progress callback for aborting streaming LLM calls.
- * When the user quits the TUI or requests abort (pause/redirect),
- * returning non-zero from this callback causes curl_easy_perform to
- * return CURLE_ABORTED_BY_CALLBACK immediately instead of blocking
- * until the server finishes. Without this, the TUI appears hung
- * during shutdown or pause because pthread_join waits for the
- * inference thread which is stuck in curl_easy_perform.
+/* Curl progress callback for aborting streaming LLM calls and stall
+ * detection. Returning non-zero causes curl_easy_perform to return
+ * CURLE_ABORTED_BY_CALLBACK immediately.
  *
- * FIX: Only check g_tui_active if TUI was actually started (g_tui_was_started).
+ * Stall detection uses two phases:
+ *   - Before SSE body data arrives (prompt processing): use the
+ *     configured llm_timeout (default 600s) since local LLMs can
+ *     spend minutes processing large prompts with zero output.
+ *   - After SSE body data starts flowing: use PROVIDER_STALL_TIMEOUT
+ *     (120s) to catch dead/crashed servers quickly.
+ *
+ * Only check g_tui_active if TUI was actually started (g_tui_was_started).
  * In daemon/telegram/matrix mode the TUI is never started, so g_tui_active
- * stays 0 — which previously caused every LLM request to be aborted
- * immediately with CURLE_ABORTED_BY_CALLBACK (curl error 42). */
+ * stays 0 -- not a signal to abort. */
 static int provider_curl_progress_cb(void *clientp,
                                      curl_off_t dltotal, curl_off_t dlnow,
                                      curl_off_t ultotal, curl_off_t ulnow) {
   (void)dltotal;
-  (void)dlnow;
   (void)ultotal;
   (void)ulnow;
   provider_t *p = (provider_t *)clientp;
-  if (p->abort_retry) return 1; /* user requested abort */
+  if (p->abort_retry) return 1;
   if (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))
-    return 1; /* TUI was running but shut down — abort */
-  return 0;   /* continue */
+    return 1;
+
+  /* Stall detection: track when dlnow last changed */
+  struct timespec now;
+  clock_gettime(CLOCK_MONOTONIC, &now);
+
+  if (dlnow != p->_stall_dl_mark) {
+    p->_stall_dl_mark = dlnow;
+    p->_stall_since = now;
+    return 0;
+  }
+
+  if (p->_stall_since.tv_sec == 0) {
+    p->_stall_since = now;
+    return 0;
+  }
+
+  int stall_sec = (int)(now.tv_sec - p->_stall_since.tv_sec);
+  int threshold;
+  if (p->_stall_body_seen) {
+    threshold = PROVIDER_STALL_TIMEOUT;
+  } else {
+    threshold = p->cfg.llm_timeout > 0 ? p->cfg.llm_timeout
+                                       : PROVIDER_DEFAULT_TIMEOUT;
+  }
+  if (stall_sec >= threshold) {
+    nash_log("[provider] stall detected: no data for %ds (body_started=%d, "
+             "threshold=%ds)", stall_sec, p->_stall_body_seen, threshold);
+    return 1;
+  }
+  return 0;
 }
 
 /* ── Shared model context size table ────────────────────────────── */
@@ -1038,6 +1068,9 @@ static size_t sse_write_cb(void *ptr, size_t size, size_t nmemb, void *userdata)
 
   if (st->stopped) return 0; /* abort transfer */
 
+  if (st->provider && !st->provider->_stall_body_seen)
+    st->provider->_stall_body_seen = 1;
+
   /* Capture raw HTTP body for error diagnostics (max 8KB) */
   if (st->raw_body.len < 8192)
     str_append(&st->raw_body, data, total < 8192 - st->raw_body.len ? total : 8192 - st->raw_body.len);
@@ -1267,6 +1300,9 @@ char *provider_complete(provider_t *p, llm_chat_t *chat, llm_stats_t *stats) {
 
   for (int attempt = 1; attempt <= PROVIDER_MAX_RETRIES(p); attempt++) {
     str_clear(&response);
+    p->_stall_dl_mark = 0;
+    p->_stall_since = (struct timespec){0, 0};
+    p->_stall_body_seen = 0;
 
     CURL *curl = curl_easy_init();
     if (!curl) {
@@ -1607,6 +1643,9 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     st.in_tool_use = 0;
     st.stopped = 0;
     st.repeat_count = 0;
+    p->_stall_dl_mark = 0;
+    p->_stall_since = (struct timespec){0, 0};
+    p->_stall_body_seen = 0;
     st.last_token_idx = 0;
     st.first_token_seen = 0;
     st.streaming_token_count = 0;
@@ -1640,16 +1679,11 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     curl_easy_setopt(curl, CURLOPT_HTTPHEADER, headers);
     curl_easy_setopt(curl, CURLOPT_WRITEFUNCTION, sse_write_cb);
     curl_easy_setopt(curl, CURLOPT_WRITEDATA, &st);
-    /* Streaming: tokens flow continuously, so use low-speed detection
-     * instead of a total timeout. This catches dead/stalled servers
-     * (e.g. llama-server crashed mid-stream) within PROVIDER_STALL_TIMEOUT
-     * seconds, while allowing arbitrarily long generations that are
-     * actively producing data. CURLOPT_TIMEOUT is intentionally omitted
-     * here - a thinking model generating for 20+ minutes is legitimate
-     * as long as SSE events keep flowing. */
+    /* No CURLOPT_TIMEOUT: a thinking model generating for 20+ minutes is
+     * legitimate as long as SSE events keep flowing. Stall detection is
+     * handled in provider_curl_progress_cb with phase-aware thresholds:
+     * long timeout during prompt processing, short after data starts. */
     curl_easy_setopt(curl, CURLOPT_CONNECTTIMEOUT, (long)PROVIDER_CONNECT_TIMEOUT);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_LIMIT, 1L);
-    curl_easy_setopt(curl, CURLOPT_LOW_SPEED_TIME, (long)PROVIDER_STALL_TIMEOUT);
     curl_easy_setopt(curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(curl, CURLOPT_XFERINFOFUNCTION, provider_curl_progress_cb);
     curl_easy_setopt(curl, CURLOPT_XFERINFODATA, p);
@@ -1661,10 +1695,19 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     curl_slist_free_all(headers);
     curl_easy_cleanup(curl);
 
-    /* If aborted by progress callback, don't retry */
+    /* Progress callback returns non-zero for two reasons:
+     * 1. User abort (abort_retry) or TUI shutdown -> don't retry
+     * 2. Stall detected (no data flow) -> retryable, fall through */
     if (res == CURLE_ABORTED_BY_CALLBACK) {
-      free(req_body);
-      goto cleanup;
+      if (p->abort_retry ||
+          (atomic_load(&g_tui_was_started) && !atomic_load(&g_tui_active))) {
+        free(req_body);
+        goto cleanup;
+      }
+      nash_log("[provider] stream stalled (no data for %ds, body_started=%d), "
+               "attempt %d/%d",
+               PROVIDER_STALL_TIMEOUT, p->_stall_body_seen,
+               attempt, PROVIDER_MAX_RETRIES(p));
     }
 
     /* Process any remaining data in line buffer */
@@ -1740,15 +1783,10 @@ char *provider_complete_stream(provider_t *p, llm_chat_t *chat,
     }
 
     if (res != CURLE_OK && !st.stopped) {
-      /* CURLE_OPERATION_TIMEDOUT from LOW_SPEED_LIMIT means the server
-       * stalled (no data for PROVIDER_STALL_TIMEOUT seconds) - this is
-       * a transient error worth retrying (server crash, network issue).
-       * Log it distinctly but let it fall through to normal retry logic. */
       if (res == CURLE_OPERATION_TIMEDOUT) {
-        nash_log("[provider] stream stalled - no data received for %ds "
-                 "(tokens_so_far=%d, attempt %d/%d)",
-                 PROVIDER_STALL_TIMEOUT, st.streaming_token_count,
-                 attempt, PROVIDER_MAX_RETRIES(p));
+        nash_log("[provider] connect timeout (%ds) - server unreachable "
+                 "(attempt %d/%d)",
+                 PROVIDER_CONNECT_TIMEOUT, attempt, PROVIDER_MAX_RETRIES(p));
       }
       int delay = attempt * PROVIDER_RETRY_BASE_SEC(p);
       nash_log("[provider] curl error: %s (attempt %d/%d, retry in %ds)",
