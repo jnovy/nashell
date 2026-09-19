@@ -1814,7 +1814,16 @@ int tui_input(ui_state_t *ui, char **out_query) {
 
     default:
     handle_default:
-      if (ui->focus == FOCUS_QUERY && ch >= 32 && ch != 127) {
+      if (ch >= 32 && ch != 127) {
+        /* Auto-switch focus from journal pane to query pane when the user
+         * starts typing printable characters.  Keys with journal-specific
+         * bindings (n/N/</>/c/Space) are handled by their own cases above
+         * and only reach here via goto handle_default when not applicable,
+         * so this redirect is safe. */
+        if (ui->focus == FOCUS_JOURNAL) {
+          ui->focus = FOCUS_QUERY;
+          ui->dirty = 1;
+        }
         if (paste_mode) {
           /* During bracketed paste with nodelay(TRUE), getch() may
                  * return raw UTF-8 bytes (0x80-0xFF) instead of assembled
