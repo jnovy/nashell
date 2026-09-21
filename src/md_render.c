@@ -1554,6 +1554,16 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
       const char *gp_text = line_buf + 3;
       int gp_len = (int)strlen(gp_text);
       int lines_consumed = 1;
+
+      /* Track links on this ~> line for cursor navigation.
+       * Subtask in-flight indicators use ~> [name](path) running...
+       * and need navigable links just like bullet list items. */
+      while (link_idx < doc->link_count &&
+             doc->links[link_idx].doc_line == src_line) {
+        doc->links[link_idx].render_line = render_line;
+        link_idx++;
+      }
+
       if (gp_len > 0) {
         if (vis_line < rows) {
           /* Render if any part of this wrapped block may be on screen.
@@ -1561,6 +1571,26 @@ int md_render(WINDOW *win, md_doc_t *doc, int scroll_y, int scroll_x,
           inline_seg_t segs[MAX_INLINE_SEGS];
           int n = parse_inline(gp_text, gp_len, segs, MAX_INLINE_SEGS);
           apply_attr_to_segs(segs, n, COLOR_PAIR(C_NORMAL));
+          /* Apply cursor highlighting to link segments */
+          if (focus) {
+            for (int si = 0; si < n; si++) {
+              if (segs[si].url && segs[si].url_len > 0) {
+                for (int li = link_idx - 1; li >= 0; li--) {
+                  if (doc->links[li].doc_line != src_line)
+                    break;
+                  if (li == cursor_link &&
+                      segs[si].url_len ==
+                        (int)strlen(doc->links[li].uri) &&
+                      memcmp(segs[si].url,
+                             doc->links[li].uri,
+                             segs[si].url_len) == 0) {
+                    segs[si].attr = A_REVERSE | A_BOLD;
+                    break;
+                  }
+                }
+              }
+            }
+          }
           int total_dcols = 0;
           for (int k = 0; k < n; k++)
             total_dcols += seg_display_cols(segs[k].text, segs[k].len);
