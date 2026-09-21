@@ -191,6 +191,14 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
     .parent_loop = ctx->react_loop, /* DAG edge to parent */
   };
 
+  /* Cue-anchored recall for ALL context levels (including minimal).
+   * This enables trigger-based memory hints (e.g., "401 Unauthorized" fires
+   * credential lessons) without the full memory injection overhead (index,
+   * pinned entries, semantic recall). Lightweight: only fires when tool I/O
+   * matches a trigger pattern on an existing memory entry. */
+  if (ctx->memory || ctx->ws)
+    child_react.flags.enable_cue_recall = 1;
+
   /* "rich" and "critic" context: enable memory injection + compaction.
    * This lets the child access workspace memory (lessons, skills, strategies)
    * which is useful for implementation subtasks that need prior decisions.
@@ -252,15 +260,27 @@ tool_result_t tool_subtask(tool_ctx_t *ctx, cJSON *params) {
       "- When multiple observations are independently valuable, list them all\n"
       "- Include exact file:line references, command outputs, and concrete data\n"
       "- Do NOT editorialize about what the parent \"probably\" wants -- "
-      "report everything you found and let the parent decide what matters\n"
-      "\n"
-      "[TASK]\n";
+      "report everything you found and let the parent decide what matters\n";
+    /* Memory hint: tell subtask that memory_search is available for
+     * credentials, preferences, and lessons. Without this, minimal
+     * subtasks have the tool but no prompt context to use it. */
+    static const char mem_hint[] =
+      "- You have access to memory_search() for recalling stored credentials, "
+      "auth tokens, user preferences, and lessons learned from prior sessions. "
+      "Use it when you hit authentication failures or need context the parent "
+      "did not provide in the task description.\n";
+    const char *mem_part = (ctx->memory || ctx->ws) ? mem_hint : "";
+    static const char task_hdr[] = "\n[TASK]\n";
     size_t plen = sizeof(preamble) - 1;
+    size_t mlen = strlen(mem_part);
+    size_t tlen = sizeof(task_hdr) - 1;
     size_t qlen = strlen(query);
-    enriched_query = xmalloc(plen + qlen + 1);
+    enriched_query = xmalloc(plen + mlen + tlen + qlen + 1);
     if (enriched_query) {
       memcpy(enriched_query, preamble, plen);
-      memcpy(enriched_query + plen, query, qlen + 1);
+      memcpy(enriched_query + plen, mem_part, mlen);
+      memcpy(enriched_query + plen + mlen, task_hdr, tlen);
+      memcpy(enriched_query + plen + mlen + tlen, query, qlen + 1);
     }
   }
   const char *effective_query = enriched_query ? enriched_query : query;

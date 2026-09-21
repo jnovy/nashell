@@ -248,6 +248,8 @@ static void apply_profile_flags(react_flags_t *flags, const config_t *cfg) {
     flags->enable_compaction = cfg->profile_enable_compaction;
   if (cfg->profile_enable_scoring >= 0)
     flags->enable_scoring = cfg->profile_enable_scoring;
+  if (cfg->profile_enable_cue_recall >= 0)
+    flags->enable_cue_recall = cfg->profile_enable_cue_recall;
   /* Repo map: enabled only when a PATH arg was given on the CLI,
      * unless explicitly disabled in config (repo_map = false). */
   if (cfg->repo_map >= 0 && !cfg->repo_map)

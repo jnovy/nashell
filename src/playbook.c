@@ -58,6 +58,8 @@ static void parse_react_overrides(yaml_node_t *react_node, pb_react_overrides_t 
     ro->enable_compaction = yaml_bool(n, -1);
   if ((n = yaml_get(react_node, "enable_scoring")))
     ro->enable_scoring = yaml_bool(n, -1);
+  if ((n = yaml_get(react_node, "enable_cue_recall")))
+    ro->enable_cue_recall = yaml_bool(n, -1);
 
   /* Sampling temperature override */
   if ((n = yaml_get(react_node, "temperature"))) {
@@ -290,6 +292,7 @@ react_flags_t playbook_resolve_flags(const playbook_t *pb, int pass_idx,
   f.enable_pruning = RESOLVE(enable_pruning, PROFILE_OR_1(profile_enable_pruning));
   f.enable_compaction = RESOLVE(enable_compaction, PROFILE_OR_1(profile_enable_compaction));
   f.enable_scoring = RESOLVE(enable_scoring, PROFILE_OR_1(profile_enable_scoring));
+  f.enable_cue_recall = RESOLVE(enable_cue_recall, PROFILE_OR_1(profile_enable_cue_recall));
 
 #undef RESOLVE
 #undef PROFILE_OR_1

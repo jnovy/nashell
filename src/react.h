@@ -18,13 +18,14 @@ typedef struct {
   unsigned int enable_pruning : 1;     /* post-reflection scratchpad pruning */
   unsigned int enable_compaction : 1;  /* LLM-based context eviction/summarization */
   unsigned int enable_scoring : 1;     /* validation scoring (recall_hits/misses) */
+  unsigned int enable_cue_recall : 1;  /* cue-anchored trigger recall (without full injection) */
 } react_flags_t;
 
 /* Default: all subsystems enabled except repo map (needs explicit PATH arg) */
-#define REACT_FLAGS_DEFAULT {1, 1, 0, 1, 1, 1, 1}
+#define REACT_FLAGS_DEFAULT {1, 1, 0, 1, 1, 1, 1, 1}
 
 /* Bare mode: all subsystems disabled (for dream/playbook passes) */
-#define REACT_FLAGS_BARE {0, 0, 0, 0, 0, 0, 0}
+#define REACT_FLAGS_BARE {0, 0, 0, 0, 0, 0, 0, 0}
 
 /* Thread ownership contract for react_ctx_t:
  *

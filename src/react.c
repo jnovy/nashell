@@ -2118,7 +2118,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
        * fires, intercept: inject the hint and loop back to the LLM
        * without executing the tool. This enables patterns like
        * "check memory before calling user_ask". */
-      if ((ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory) {
+      if ((ctx->tools->memory || ctx->tools->ws) && (ctx->flags.inject_memory || ctx->flags.enable_cue_recall)) {
         char *pre_params = cJSON_PrintUnformatted(action);
         size_t pre_len = strlen(action_name) + 1 +
                          (pre_params ? strlen(pre_params) : 0) + 1;
@@ -2554,7 +2554,7 @@ char *react_run(react_ctx_t *ctx, const char *user_query,
          * SSL errors, JIRA auth issues, etc.). Uses fire ledger to prevent
          * redundant injection within the same context window.
          * Research basis: arXiv 2607.20972 "Delivery, Not Storage". */
-    if ((ctx->tools->memory || ctx->tools->ws) && ctx->flags.inject_memory && action_name && meta_str) {
+    if ((ctx->tools->memory || ctx->tools->ws) && (ctx->flags.inject_memory || ctx->flags.enable_cue_recall) && action_name && meta_str) {
       /* Build match surface: tool name + params + result */
       char *params_str = cJSON_PrintUnformatted(action);
       size_t surface_len = strlen(action_name) + 1 + (params_str ? strlen(params_str) : 0) + 1 + strlen(meta_str) + 1;

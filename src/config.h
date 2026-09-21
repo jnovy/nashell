@@ -130,6 +130,7 @@ typedef struct {
   int enable_pruning;     /* -1 = inherit */
   int enable_compaction;  /* -1 = inherit */
   int enable_scoring;     /* -1 = inherit */
+  int enable_cue_recall;  /* -1 = inherit */
 
   /* [limits] overrides */
   int max_react_steps;            /* 0 = inherit */
@@ -422,6 +423,7 @@ typedef struct {
   int profile_enable_pruning;     /* -1 = not set */
   int profile_enable_compaction;  /* -1 = not set */
   int profile_enable_scoring;     /* -1 = not set */
+  int profile_enable_cue_recall;  /* -1 = not set */
   int profile_strip_sampling_params;      /* -1 = not set */
   char *profile_default_reasoning_effort; /* NULL = not set (owned) */
 

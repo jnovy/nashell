@@ -31,6 +31,7 @@ typedef struct {
   int enable_pruning;     /* -1 = inherit */
   int enable_compaction;  /* -1 = inherit */
   int enable_scoring;     /* -1 = inherit */
+  int enable_cue_recall;  /* -1 = inherit */
   /* Tool filter */
   char **tools_allow; /* NULL = inherit */
   int n_tools_allow;
@@ -40,7 +41,7 @@ typedef struct {
   float temperature;  /* -1.0f = inherit from provider */
 } pb_react_overrides_t;
 
-#define PB_REACT_INHERIT {0, -1, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0, -1.0f}
+#define PB_REACT_INHERIT {0, -1, -1, -1, -1, -1, -1, -1, -1, NULL, 0, NULL, 0, -1.0f}
 
 /* Pass type: LLM react loop (default) or shell script (no LLM). */
 typedef enum {

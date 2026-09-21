@@ -277,6 +277,7 @@ config_t *config_load(const char *path) {
   cfg->profile_enable_pruning = -1;
   cfg->profile_enable_compaction = -1;
   cfg->profile_enable_scoring = -1;
+  cfg->profile_enable_cue_recall = -1;
   /* Sentinel initialization for timeout/size fields where 0 is a valid
      * user value (0 = "no limit").  config_set_defaults() checks == -1
      * for these, so calloc's zero would skip default assignment. */
@@ -930,6 +931,7 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
     p->enable_pruning = -1;
     p->enable_compaction = -1;
     p->enable_scoring = -1;
+    p->enable_cue_recall = -1;
     p->cycling_detection = -1;
     p->temperature = -1.0f;     /* -1 = inherit (0.0 is valid: deterministic) */
     p->top_p = -1.0f;           /* -1 = inherit (0.0-1.0, 1.0=disabled) */
@@ -996,6 +998,10 @@ int config_load_model_profiles(config_t *cfg, const char *models_dir) {
       {
         toml_datum_t d = toml_bool_in(react_tbl, "enable_scoring");
         if (d.ok) p->enable_scoring = d.u.b ? 1 : 0;
+      }
+      {
+        toml_datum_t d = toml_bool_in(react_tbl, "enable_cue_recall");
+        if (d.ok) p->enable_cue_recall = d.u.b ? 1 : 0;
       }
     }
 
@@ -1212,6 +1218,7 @@ void config_apply_profile(config_t *cfg, const model_profile_t *p) {
   if (p->enable_pruning >= 0) cfg->profile_enable_pruning = p->enable_pruning;
   if (p->enable_compaction >= 0) cfg->profile_enable_compaction = p->enable_compaction;
   if (p->enable_scoring >= 0) cfg->profile_enable_scoring = p->enable_scoring;
+  if (p->enable_cue_recall >= 0) cfg->profile_enable_cue_recall = p->enable_cue_recall;
 
   /* [tools] filter → store on cfg for main.c/react.c to use.
      * These point into the profile's arrays (no copy needed — profile
@@ -1381,8 +1388,10 @@ void config_dump_spec(const config_t *cfg, FILE *out, const char *profile_file) 
           cfg->profile_enable_pruning == 0 ? "false" : "true");
   fprintf(out, "enable_compaction = %s\n",
           cfg->profile_enable_compaction == 0 ? "false" : "true");
-  fprintf(out, "enable_scoring = %s\n\n",
+  fprintf(out, "enable_scoring = %s\n",
           cfg->profile_enable_scoring == 0 ? "false" : "true");
+  fprintf(out, "enable_cue_recall = %s\n\n",
+          cfg->profile_enable_cue_recall == 0 ? "false" : "true");
 
   fprintf(out, "[memory]\n");
   fprintf(out, "recall_min_score = %.2f\n", cfg->recall_min_score);
@@ -1717,6 +1726,10 @@ int config_load_spec_overlay(config_t *cfg, const char *path) {
     {
       toml_datum_t td = toml_bool_in(react, "enable_scoring");
       if (td.ok) cfg->profile_enable_scoring = td.u.b ? 1 : 0;
+    }
+    {
+      toml_datum_t td = toml_bool_in(react, "enable_cue_recall");
+      if (td.ok) cfg->profile_enable_cue_recall = td.u.b ? 1 : 0;
     }
   }
 
