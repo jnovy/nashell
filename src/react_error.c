@@ -489,155 +489,43 @@ int react_handle_null_response(react_ctx_t *ctx, llm_chat_t *chat,
     }
   }
 
-  /* 5-tier retry strategy for HTTP 500 / NULL responses.
+  /* ---- Catch-all: retry with backoff, no context changes. ----
    *
-   * IMPORTANT: Transient errors (connection failures, server errors) must
-   * NEVER trigger context-destructive recovery (tiers 1-3).  Removing
-   * messages or stripping the scratchpad cannot fix a network outage -
-   * it only destroys useful context.  Detect transient errors first and
-   * handle them with plain retries + increasing backoff. */
-
-  /* Detect transient (connection/server) errors that are unrelated to
-   * request content or context size.  These should only be retried,
-   * never trigger context eviction or scratchpad stripping. */
-  int is_transient = !srv_err                         /* unknown error */
-    || strstr(srv_err, "curl error:")                 /* network/DNS/timeout */
-    || strstr(srv_err, "HTTP 5")                      /* server errors 5xx */
-    || strstr(srv_err, "get_endpoint returned NULL")  /* config issue */
-    || strstr(srv_err, "build_request");              /* request build error */
-
-  if (is_transient) {
-    /* Connection/server error - retry with increasing backoff.
-     * Allow more attempts than content errors since each retry has a
-     * real chance of succeeding once connectivity is restored. */
-    if (*consecutive_null >= 10) {
-      ev.message = "LLM connection/server error - retries exhausted after "
-                   "10 attempts, giving up";
-      react_emit(on_event, userdata, &ev);
-      journal_recovery_event(ctx, step, ev.message);
-      return 1;
-    }
-    if (react_should_abort(ctx)) return 1;
-    int backoff_ms = *consecutive_null * 3000; /* 3s, 6s, 9s, ... 30s */
-    char rmsg[256];
-    snprintf(rmsg, sizeof(rmsg),
-             "LLM connection/server error - retry %d/10 "
-             "(backoff %dms, no context changes) - %.128s",
-             *consecutive_null, backoff_ms,
-             srv_err ? srv_err : "unknown");
-    ev.message = rmsg;
-    react_emit(on_event, userdata, &ev);
-    journal_recovery_event(ctx, step, rmsg);
-    for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
-      usleep(100000);
-    return 0; /* retry without touching context */
-  }
-
-  /* Content/context errors - use tiered recovery with escalating
-   * context reduction.  Only reached for errors that are NOT transient
-   * (e.g. unparseable response, unknown content-related issues). */
-  if (*consecutive_null >= 6) {
-    ev.message = "LLM server error - all recovery tiers exhausted, giving up";
+   * By this point every error that benefits from context reduction has
+   * already been handled above with targeted recovery:
+   *   - HTTP 400 (context too large) -> evict messages
+   *   - HTTP 401/403              -> auth retry
+   *   - HTTP 429                  -> rate-limit backoff
+   *   - max-token exhaustion      -> evict or inject hint
+   *
+   * Anything still here - network errors, server 5xx, JSON parse
+   * failures, auth credential errors, aborts, or any future error
+   * string we haven't anticipated - is NOT a context problem.
+   * Stripping scratchpad or removing messages cannot fix it.
+   *
+   * Safe default: retry with increasing backoff, give up after 10
+   * attempts.  This is intentionally permissive - we would rather
+   * retry a few extra times than destroy useful context for an error
+   * that context reduction cannot fix. */
+  if (*consecutive_null >= 10) {
+    ev.message = "LLM error - retries exhausted after "
+                 "10 attempts, giving up";
     react_emit(on_event, userdata, &ev);
     journal_recovery_event(ctx, step, ev.message);
     return 1;
   }
-
-  if (*consecutive_null <= 2) {
-    /* Tier 0: Plain retry with backoff */
-    if (react_should_abort(ctx)) return 1;
-    int backoff_ms = *consecutive_null * 2000;
-    char rmsg[128];
-    snprintf(rmsg, sizeof(rmsg),
-             "LLM server error - plain retry %d/2 (backoff %dms)",
-             *consecutive_null, backoff_ms);
-    ev.message = rmsg;
-    react_emit(on_event, userdata, &ev);
-    journal_recovery_event(ctx, step, rmsg);
-    for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
-      usleep(100000);
-  } else if (*consecutive_null == 3) {
-    /* Tier 1: Remove the last assistant+tool_result pair.
-         * Walk backward to find the actual last tool_result, skipping
-         * injected hint/summary messages. Then find its partner tool_call. */
-    ev.message = "LLM server error - removing last exchange and retrying (tier 1)";
-    react_emit(on_event, userdata, &ev);
-    journal_recovery_event(ctx, step, ev.message);
-    int kh = react_compute_keep_head(chat);
-    int tr_idx = -1; /* last tool_result index */
-    for (int i = chat->n_msgs - 1; i >= kh; i--) {
-      if (chat->msgs[i].tool_call_id) {
-        tr_idx = i;
-        break;
-      }
-    }
-    if (tr_idx >= 0) {
-      /* Find the partner tool_call for this result */
-      int tc_idx = react_find_tool_partner(chat, tr_idx, kh, chat->n_msgs);
-      int remove_from = (tc_idx >= kh) ? tc_idx : tr_idx;
-      if (remove_from < chat->n_msgs)
-        llm_chat_remove_range(chat, remove_from, chat->n_msgs);
-    } else if (chat->n_msgs > kh) {
-      /* No tool_result found - fall back to removing last message */
-      llm_chat_remove_range(chat, chat->n_msgs - 1, chat->n_msgs);
-    }
-  } else if (*consecutive_null == 4) {
-    /* Tier 2: Reformulate scratchpad (strip code blocks) */
-    int sp_idx = llm_chat_find_by_type(chat, LLM_MSG_SCRATCHPAD);
-    if (sp_idx >= 0) {
-      ev.message = "LLM server error - stripping code blocks from scratchpad (tier 2)";
-      react_emit(on_event, userdata, &ev);
-      journal_recovery_event(ctx, step, ev.message);
-      const char *src = chat->msgs[sp_idx].content;
-      {
-        const char *nl = strchr(src, '\n');
-        if (nl) src = nl + 1;
-      }
-      size_t src_len = strlen(src);
-      char *cleaned = xmalloc(src_len + 1);
-      if (cleaned) {
-        size_t di = 0;
-        for (size_t si = 0; si < src_len;) {
-          if (si + 3 <= src_len && strncmp(src + si, "```", 3) == 0) {
-            const char *end = strstr(src + si + 3, "```");
-            if (end) {
-              si = (size_t)(end - src) + 3;
-              if (si < src_len && src[si] == '\n') si++;
-            } else {
-              si += 3;
-            }
-            continue;
-          }
-          if (src[si] == '`') {
-            const char *end = strchr(src + si + 1, '`');
-            if (end && end - (src + si) < REACT_THOUGHT_TRUNC_LEN) {
-              si++;
-              while (src + si < end)
-                cleaned[di++] = src[si++];
-              si++;
-              continue;
-            }
-          }
-          cleaned[di++] = src[si++];
-        }
-        cleaned[di] = '\0';
-        char *new_sp = react_format_scratchpad_msg(cleaned);
-        if (new_sp)
-          llm_chat_replace_content(chat, sp_idx, new_sp);
-        free(cleaned);
-      }
-    } else {
-      ev.message = "LLM server error - no scratchpad, skipping tier 2";
-      react_emit(on_event, userdata, &ev);
-      journal_recovery_event(ctx, step, ev.message);
-    }
-  } else if (*consecutive_null == 5) {
-    /* Tier 3: Strip scratchpad entirely (nuclear option) */
-    ev.message = "LLM server error - stripping scratchpad entirely (tier 3)";
-    react_emit(on_event, userdata, &ev);
-    journal_recovery_event(ctx, step, ev.message);
-    llm_chat_remove_by_type(chat, LLM_MSG_SCRATCHPAD);
-    /* Do NOT re-inject - this is a true strip, not a refresh. */
-  }
-  return 0;
+  if (react_should_abort(ctx)) return 1;
+  int backoff_ms = *consecutive_null * 3000; /* 3s, 6s, 9s, ... 30s */
+  char rmsg[256];
+  snprintf(rmsg, sizeof(rmsg),
+           "LLM error - retry %d/10 "
+           "(backoff %dms, no context changes) - %.128s",
+           *consecutive_null, backoff_ms,
+           srv_err ? srv_err : "unknown");
+  ev.message = rmsg;
+  react_emit(on_event, userdata, &ev);
+  journal_recovery_event(ctx, step, rmsg);
+  for (int ms = 0; ms < backoff_ms && !react_should_abort(ctx); ms += 100)
+    usleep(100000);
+  return 0; /* retry without touching context */
 }
