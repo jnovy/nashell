@@ -2162,85 +2162,69 @@ static char *generate_timeline_md(ui_state_t *ui) {
 
 /* ── F6: Metrics (token/performance dashboard) ──────────── */
 
+/* Format a number with human-readable suffix: 523, 1.2k, 45k, 1.2M */
+static const char *fmt_num(char *buf, size_t bufsz, long val) {
+  if (val < 1000)
+    snprintf(buf, bufsz, "%ld", val);
+  else if (val < 10000)
+    snprintf(buf, bufsz, "%.1fk", val / 1000.0);
+  else if (val < 1000000)
+    snprintf(buf, bufsz, "%ldk", val / 1000);
+  else if (val < 10000000)
+    snprintf(buf, bufsz, "%.1fM", val / 1000000.0);
+  else
+    snprintf(buf, bufsz, "%ldM", val / 1000000);
+  return buf;
+}
+
 static char *generate_metrics_md(ui_state_t *ui) {
   str_t md = str_new(2048);
   str_append_cstr(&md, "# Session Metrics\n\n");
 
-  /* Current react loop stats */
-  str_appendf(&md, "## React Loop R%d\n\n", ui->current_react_loop);
-
-  str_appendf(&md, "| Metric | Value |\n");
-  str_appendf(&md, "|--------|-------|\n");
-  str_appendf(&md, "| Steps | %d / %d |\n",
-              ui->current_step, ui->max_steps);
-  str_appendf(&md, "| Prompt tokens | %d |\n", ui->cum_prompt_tokens);
-  str_appendf(&md, "| Completion tokens | %d |\n", ui->cum_completion_tokens);
-  int total_tok = ui->cum_prompt_tokens + ui->cum_completion_tokens;
-  str_appendf(&md, "| Total tokens | %d |\n", total_tok);
-
-  if (ui->context_size > 0) {
-    double pct = ui->context_used > 0
-                   ? 100.0 * ui->context_used / ui->context_size
-                   : 0;
-    str_appendf(&md, "| Context usage | %d%% (%dK / %dK) |\n",
-                (int)pct, ui->context_used / 1000,
-                ui->context_size / 1000);
-  }
-
-  if (ui->cum_predicted_per_second > 0)
-    str_appendf(&md, "| Gen speed | %.1f t/s |\n",
-                ui->cum_predicted_per_second);
-  if (ui->cum_prompt_per_second > 0)
-    str_appendf(&md, "| Prompt speed | %.0f t/s |\n",
-                ui->cum_prompt_per_second);
-  if (ui->react_total_elapsed > 0) {
-    int mins = (int)(ui->react_total_elapsed / 60);
-    int secs = (int)(ui->react_total_elapsed) % 60;
-    str_appendf(&md, "| Wall time | %dm %ds |\n", mins, secs);
-  }
-  str_appendf(&md, "| LLM calls | %d |\n", ui->cum_llm_steps);
-  str_append_cstr(&md, "\n");
-
-  /* Model info */
-  if (ui->model_name && ui->model_name[0]) {
-    str_appendf(&md, "## Model\n\n");
-    str_appendf(&md, "**%s**", ui->model_name);
-    if (ui->context_size > 0)
-      str_appendf(&md, " (%dK context)", ui->context_size / 1000);
-    str_append_cstr(&md, "\n\n");
-  }
-
-  /* Per-tool aggregate stats from journal.
-   * Journal entries have: react_loop, step, ts(string), tool, params, ref,
-   * size, lines, failed, error, tc_id.
-   * Token data lives in log entries with message matching
-   * "[provider/complete] final stats: prompt_tokens=N ... completion_tokens=N".
-   * We correlate log entries with tool calls by step number,
-   * then aggregate by tool name. */
+  /* Open journal early - we compute session totals from it */
   const char *eff_dir = ui->playbook_session_dir
                           ? ui->playbook_session_dir
                           : ui->session_dir;
   char jpath[NASH_PATH_MAX];
   snprintf(jpath, sizeof(jpath), "%s/journal.jsonl", eff_dir);
   FILE *f = fopen(jpath, "r");
-  if (f) {
-    /* First pass: collect per-step token stats from provider log entries */
-    typedef struct { int ptok; int ctok; double gen_speed; } step_tokens_t;
-    step_tokens_t step_tok[256] = {{0}}; /* indexed by step, capped at 256 */
 
+  /* Compute cumulative session stats from journal */
+  long sess_ptok = 0, sess_ctok = 0;
+  int sess_llm_calls = 0;
+  double first_ts = 0, last_ts = 0;
+
+  /* Per-step token stats keyed by (loop * 256 + step) for cross-loop usage.
+   * Supports up to 32 loops * 256 steps = 8192 entries. */
+  #define STEP_TOK_MAX 8192
+  typedef struct { int ptok; int ctok; double gen_speed; } step_tokens_t;
+  step_tokens_t *step_tok = calloc(STEP_TOK_MAX, sizeof(step_tokens_t));
+
+  if (f) {
+    /* First pass: collect per-step token stats + session totals */
     char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
       cJSON *entry = cJSON_Parse(line);
       if (!entry) continue;
       int loop = json_int(entry, "react_loop", 0);
-      if (loop != ui->current_react_loop) {
-        cJSON_Delete(entry);
-        continue;
+
+      /* Track session wall time from timestamps */
+      cJSON *ts_j = cJSON_GetObjectItem(entry, "ts");
+      if (ts_j) {
+        double ts = cJSON_IsString(ts_j) ? atof(ts_j->valuestring)
+                                         : ts_j->valuedouble;
+        if (ts > 0) {
+          if (first_ts == 0) first_ts = ts;
+          last_ts = ts;
+        }
       }
+
       const char *tool = json_str(entry, "tool");
       int step = json_int(entry, "step", 0);
+
       /* Parse provider/complete log messages for token stats */
-      if (tool && strcmp(tool, "log") == 0 && step >= 0 && step < 256) {
+      int key = loop * 256 + (step & 0xFF);
+      if (tool && strcmp(tool, "log") == 0 && key >= 0 && key < STEP_TOK_MAX) {
         cJSON *params = cJSON_GetObjectItem(entry, "params");
         const char *msg = params ? json_str(params, "message") : NULL;
         if (msg && strstr(msg, "[provider/complete]")) {
@@ -2253,15 +2237,76 @@ static char *generate_metrics_md(ui_state_t *ui) {
             ct = atoi(p + 18);
           if ((p = strstr(msg, "gen=")) != NULL)
             gs = atof(p + 4);
-          step_tok[step].ptok = pt;
-          step_tok[step].ctok = ct;
-          step_tok[step].gen_speed = gs;
+          step_tok[key].ptok = pt;
+          step_tok[key].ctok = ct;
+          step_tok[key].gen_speed = gs;
+          sess_ptok += pt;
+          sess_ctok += ct;
+          sess_llm_calls++;
         }
       }
       cJSON_Delete(entry);
     }
+  }
 
-    /* Second pass: aggregate tool calls by tool name + collect modified files */
+  /* Session summary table - cumulative across all react loops */
+  if (ui->current_react_loop > 0)
+    str_appendf(&md, "## Session Totals (R0..R%d)\n\n", ui->current_react_loop);
+  else
+    str_appendf(&md, "## Session Totals (R0)\n\n");
+
+  str_appendf(&md, "| Metric | Value |\n");
+  str_appendf(&md, "|--------|-------|\n");
+  str_appendf(&md, "| React loops | %d |\n", ui->current_react_loop + 1);
+  str_appendf(&md, "| Current step | R%d S%d / %d |\n",
+              ui->current_react_loop, ui->current_step, ui->max_steps);
+  char nb1[32], nb2[32], nb3[32];
+  str_appendf(&md, "| Prompt tokens | %s |\n", fmt_num(nb1, sizeof(nb1), sess_ptok));
+  str_appendf(&md, "| Completion tokens | %s |\n", fmt_num(nb2, sizeof(nb2), sess_ctok));
+  str_appendf(&md, "| Total tokens | %s |\n", fmt_num(nb3, sizeof(nb3), sess_ptok + sess_ctok));
+
+  if (ui->context_size > 0) {
+    double pct = ui->context_used > 0
+                   ? 100.0 * ui->context_used / ui->context_size
+                   : 0;
+    char cb1[32], cb2[32];
+    str_appendf(&md, "| Context usage | %d%% (%s / %s) |\n",
+                (int)pct, fmt_num(cb1, sizeof(cb1), ui->context_used),
+                fmt_num(cb2, sizeof(cb2), ui->context_size));
+  }
+
+  if (ui->cum_predicted_per_second > 0)
+    str_appendf(&md, "| Gen speed | %.1f t/s |\n",
+                ui->cum_predicted_per_second);
+  if (ui->cum_prompt_per_second > 0)
+    str_appendf(&md, "| Prompt speed | %.0f t/s |\n",
+                ui->cum_prompt_per_second);
+  if (first_ts > 0 && last_ts > first_ts) {
+    int elapsed = (int)(last_ts - first_ts);
+    int mins = elapsed / 60;
+    int secs = elapsed % 60;
+    str_appendf(&md, "| Wall time | %dm %ds |\n", mins, secs);
+  } else if (ui->react_total_elapsed > 0) {
+    int mins = (int)(ui->react_total_elapsed / 60);
+    int secs = (int)(ui->react_total_elapsed) % 60;
+    str_appendf(&md, "| Wall time | %dm %ds |\n", mins, secs);
+  }
+  str_appendf(&md, "| LLM calls | %d |\n", sess_llm_calls);
+  str_append_cstr(&md, "\n");
+
+  /* Model info */
+  if (ui->model_name && ui->model_name[0]) {
+    str_appendf(&md, "## Model\n\n");
+    str_appendf(&md, "**%s**", ui->model_name);
+    if (ui->context_size > 0) {
+      char csz[32];
+      str_appendf(&md, " (%s context)", fmt_num(csz, sizeof(csz), ui->context_size));
+    }
+    str_append_cstr(&md, "\n\n");
+  }
+
+  /* Per-tool aggregate stats from journal (second pass, all loops) */
+  if (f) {
     typedef struct {
       char name[64];
       int calls;
@@ -2278,6 +2323,7 @@ static char *generate_metrics_md(ui_state_t *ui) {
 
     typedef struct {
       char path[512];
+      int last_loop;
       int last_step;
       int count;
     } mod_file_t;
@@ -2287,14 +2333,11 @@ static char *generate_metrics_md(ui_state_t *ui) {
     int mod_file_count = 0;
 
     rewind(f);
+    char line[NASH_LINE_MAX];
     while (fgets(line, sizeof(line), f)) {
       cJSON *entry = cJSON_Parse(line);
       if (!entry) continue;
       int loop = json_int(entry, "react_loop", 0);
-      if (loop != ui->current_react_loop) {
-        cJSON_Delete(entry);
-        continue;
-      }
       const char *tool = json_str(entry, "tool");
       int step = json_int(entry, "step", 0);
       /* Skip internal entries: log, system, ctx:*, spec, memory_context */
@@ -2318,11 +2361,12 @@ static char *generate_metrics_md(ui_state_t *ui) {
       if (idx >= 0) {
         tools[idx].calls++;
         tools[idx].total_size += json_int(entry, "size", 0);
-        if (step >= 0 && step < 256) {
-          tools[idx].total_ptok += step_tok[step].ptok;
-          tools[idx].total_ctok += step_tok[step].ctok;
-          if (step_tok[step].gen_speed > 0) {
-            tools[idx].total_gen_speed += step_tok[step].gen_speed;
+        int key = loop * 256 + (step & 0xFF);
+        if (key >= 0 && key < STEP_TOK_MAX) {
+          tools[idx].total_ptok += step_tok[key].ptok;
+          tools[idx].total_ctok += step_tok[key].ctok;
+          if (step_tok[key].gen_speed > 0) {
+            tools[idx].total_gen_speed += step_tok[key].gen_speed;
             tools[idx].gen_count++;
           }
         }
@@ -2337,14 +2381,18 @@ static char *generate_metrics_md(ui_state_t *ui) {
           for (int i = 0; i < mod_file_count; i++) {
             if (strcmp(mod_files[i].path, fpath) == 0) { midx = i; break; }
           }
+          int order = loop * 256 + step;
           if (midx >= 0) {
             mod_files[midx].count++;
-            if (step > mod_files[midx].last_step)
+            if (order > mod_files[midx].last_loop * 256 + mod_files[midx].last_step) {
+              mod_files[midx].last_loop = loop;
               mod_files[midx].last_step = step;
+            }
           } else if (mod_file_count < MAX_MOD_FILES) {
             midx = mod_file_count++;
             snprintf(mod_files[midx].path, sizeof(mod_files[midx].path),
                      "%s", fpath);
+            mod_files[midx].last_loop = loop;
             mod_files[midx].last_step = step;
             mod_files[midx].count = 1;
           }
@@ -2384,15 +2432,15 @@ static char *generate_metrics_md(ui_state_t *ui) {
       grand_ctok += t->total_ctok;
 
       char sz_buf[32];
-      if (t->total_size >= 1000)
-        snprintf(sz_buf, sizeof(sz_buf), "%ldK", t->total_size / 1000);
-      else
-        snprintf(sz_buf, sizeof(sz_buf), "%ld", t->total_size);
+      fmt_num(sz_buf, sizeof(sz_buf), t->total_size);
 
       char tok_buf[32] = "-";
-      if (t->total_ptok > 0 || t->total_ctok > 0)
-        snprintf(tok_buf, sizeof(tok_buf), "%ld+%ld",
-                 t->total_ptok, t->total_ctok);
+      if (t->total_ptok > 0 || t->total_ctok > 0) {
+        char tb1[16], tb2[16];
+        snprintf(tok_buf, sizeof(tok_buf), "%s+%s",
+                 fmt_num(tb1, sizeof(tb1), t->total_ptok),
+                 fmt_num(tb2, sizeof(tb2), t->total_ctok));
+      }
 
       char gen_buf[16] = "-";
       if (t->gen_count > 0)
@@ -2406,14 +2454,15 @@ static char *generate_metrics_md(ui_state_t *ui) {
     /* Totals row */
     if (tool_count > 0) {
       char gsz[32], gtok[32];
-      if (grand_size >= 1000)
-        snprintf(gsz, sizeof(gsz), "%ldK", grand_size / 1000);
-      else
-        snprintf(gsz, sizeof(gsz), "%ld", grand_size);
-      if (grand_ptok > 0 || grand_ctok > 0)
-        snprintf(gtok, sizeof(gtok), "%ld+%ld", grand_ptok, grand_ctok);
-      else
+      fmt_num(gsz, sizeof(gsz), grand_size);
+      if (grand_ptok > 0 || grand_ctok > 0) {
+        char gb1[16], gb2[16];
+        snprintf(gtok, sizeof(gtok), "%s+%s",
+                 fmt_num(gb1, sizeof(gb1), grand_ptok),
+                 fmt_num(gb2, sizeof(gb2), grand_ctok));
+      } else {
         snprintf(gtok, sizeof(gtok), "-");
+      }
       str_appendf(&md, "| **Total** | **%d** | **%s** | **%s** | ||\n",
                   grand_calls, gsz, gtok);
     } else {
@@ -2423,10 +2472,12 @@ static char *generate_metrics_md(ui_state_t *ui) {
 
     /* Modified files section */
     if (mod_file_count > 0) {
-      /* Sort by last_step descending (most recently modified first) */
+      /* Sort by (last_loop, last_step) descending */
       for (int i = 0; i < mod_file_count - 1; i++) {
         for (int j = i + 1; j < mod_file_count; j++) {
-          if (mod_files[j].last_step > mod_files[i].last_step) {
+          int oi = mod_files[i].last_loop * 256 + mod_files[i].last_step;
+          int oj = mod_files[j].last_loop * 256 + mod_files[j].last_step;
+          if (oj > oi) {
             mod_file_t tmp = mod_files[i];
             mod_files[i] = mod_files[j];
             mod_files[j] = tmp;
@@ -2435,7 +2486,7 @@ static char *generate_metrics_md(ui_state_t *ui) {
       }
 
       str_append_cstr(&md, "## Modified Files\n\n");
-      str_append_cstr(&md, "| File | Edits | Last Step |\n");
+      str_append_cstr(&md, "| File | Edits | Last Edit |\n");
       str_append_cstr(&md, "|------|-------|-----------|\n");
 
       for (int i = 0; i < mod_file_count; i++) {
@@ -2448,13 +2499,15 @@ static char *generate_metrics_md(ui_state_t *ui) {
           if (*prev == '/') prev++;
           display = prev;
         }
-        str_appendf(&md, "| %s | %d | %d |\n",
-                    display, mod_files[i].count, mod_files[i].last_step);
+        str_appendf(&md, "| %s | %d | R%d S%d |\n",
+                    display, mod_files[i].count,
+                    mod_files[i].last_loop, mod_files[i].last_step);
       }
       str_append_cstr(&md, "\n");
     }
   }
 
+  free(step_tok);
   return str_steal(&md);
 }
 
