@@ -30,6 +30,7 @@ struct fswatch {
   fswatch_cb cb;
   void *userdata;
   watch_entry_t *watches;
+  watch_entry_t *retired;
 };
 
 static watch_entry_t *find_watch(fswatch_t *w, const char *path) {
@@ -38,6 +39,8 @@ static watch_entry_t *find_watch(fswatch_t *w, const char *path) {
   return NULL;
 }
 
+/* Detached watches stay alive until the current drain completes because a
+ * kqueue batch can still carry their udata pointers. */
 static void remove_watches_at_or_below(fswatch_t *w, const char *path) {
   size_t path_len = strlen(path);
   watch_entry_t **pp = &w->watches;
@@ -48,12 +51,34 @@ static void remove_watches_at_or_below(fswatch_t *w, const char *path) {
          entry->path[path_len] == '/')) {
       *pp = entry->next;
       close(entry->fd);
-      free(entry->path);
-      free(entry);
+      entry->fd = -1;
+      entry->next = w->retired;
+      w->retired = entry;
     } else {
       pp = &entry->next;
     }
   }
+}
+
+static int watch_is_active(fswatch_t *w, const watch_entry_t *entry) {
+  for (watch_entry_t *e = w->watches; e; e = e->next)
+    if (e == entry) return 1;
+  return 0;
+}
+
+static void free_watch_list(watch_entry_t *entry) {
+  while (entry) {
+    watch_entry_t *next = entry->next;
+    if (entry->fd >= 0) close(entry->fd);
+    free(entry->path);
+    free(entry);
+    entry = next;
+  }
+}
+
+static void reap_retired_watches(fswatch_t *w) {
+  free_watch_list(w->retired);
+  w->retired = NULL;
 }
 
 static int watches_same_vnode(const watch_entry_t *entry, const char *path) {
@@ -173,6 +198,7 @@ int fswatch_add(fswatch_t *w, const char *path, int recursive) {
   if (lstat(path, &st) != 0) return -1;
   if (recursive && S_ISDIR(st.st_mode)) (void)watch_tree(w, path, 0);
   else if (add_watch(w, path, S_ISDIR(st.st_mode), 0) != 0) return -1;
+  else if (S_ISDIR(st.st_mode)) (void)watch_direct_files(w, path, 0);
   return find_watch(w, path) ? 0 : -1;
 }
 
@@ -186,7 +212,7 @@ int fswatch_drain(fswatch_t *w) {
   while ((n = kevent(w->kqfd, NULL, 0, events, 32, &timeout)) > 0) {
     for (int i = 0; i < n; i++) {
       watch_entry_t *entry = events[i].udata;
-      if (!entry) continue;
+      if (!entry || !watch_is_active(w, entry)) continue;
       int flags = 0;
       if (events[i].fflags & (NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB))
         flags |= FSW_MODIFY;
@@ -195,7 +221,10 @@ int fswatch_drain(fswatch_t *w) {
       if (!flags) continue;
       if (flags & (FSW_DELETE | FSW_RENAME)) {
         char *path = strdup(entry->path);
-        if (!path) return -1;
+        if (!path) {
+          reap_retired_watches(w);
+          return -1;
+        }
         w->cb(path, flags, w->userdata);
         count++;
         remove_watches_at_or_below(w, path);
@@ -211,19 +240,15 @@ int fswatch_drain(fswatch_t *w) {
       }
     }
   }
-  return n < 0 && errno != EAGAIN ? -1 : count;
+  int result = n < 0 && errno != EAGAIN ? -1 : count;
+  reap_retired_watches(w);
+  return result;
 }
 
 void fswatch_free(fswatch_t *w) {
   if (!w) return;
-  watch_entry_t *entry = w->watches;
-  while (entry) {
-    watch_entry_t *next = entry->next;
-    close(entry->fd);
-    free(entry->path);
-    free(entry);
-    entry = next;
-  }
+  free_watch_list(w->watches);
+  free_watch_list(w->retired);
   close(w->kqfd);
   free(w);
 }

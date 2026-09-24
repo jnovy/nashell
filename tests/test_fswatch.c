@@ -383,6 +383,57 @@ static void test_nonrecursive_watch_stays_shallow(void) {
   rmrf(dir);
 }
 
+static void test_nonrecursive_watch_existing_file(void) {
+  printf("\n--- test_nonrecursive_watch_existing_file ---\n");
+  cb_state_t st = {0};
+  fswatch_t *w = fswatch_init(test_cb, &st);
+  char *dir = make_tmpdir();
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/existing.txt", dir);
+  write_file(path, "before");
+
+  ASSERT(fswatch_add(w, dir, 0) == 0,
+         "add non-recursive watch with existing file");
+  st.count = 0;
+  write_file(path, "after");
+  int n = wait_and_drain(w, 1000);
+#ifdef __APPLE__
+  ASSERT(n > 0, "existing direct file is watched immediately");
+  ASSERT(st.last_event & FSW_MODIFY,
+         "existing direct file reports modification, not creation");
+#else
+  (void)n;
+  ASSERT(1, "existing file behavior is tested by the kqueue backend");
+#endif
+
+  fswatch_free(w);
+  rmrf(dir);
+}
+
+static void test_recursive_tree_removal(void) {
+  printf("\n--- test_recursive_tree_removal ---\n");
+  cb_state_t st = {0};
+  fswatch_t *w = fswatch_init(test_cb, &st);
+  char *dir = make_tmpdir();
+  char subdir[PATH_MAX], path[PATH_MAX];
+  snprintf(subdir, sizeof(subdir), "%s/sub", dir);
+  snprintf(path, sizeof(path), "%s/sub/file.txt", dir);
+  mkdir(subdir, 0755);
+  write_file(path, "watched");
+
+  ASSERT(fswatch_add(w, dir, 1) == 0, "add recursive tree watch");
+  rmrf(dir);
+  int n = wait_and_drain(w, 1000);
+#ifdef __APPLE__
+  ASSERT(n > 0, "recursive tree removal drains safely");
+#else
+  (void)n;
+  ASSERT(1, "recursive tree removal is tested by the kqueue backend");
+#endif
+
+  fswatch_free(w);
+}
+
 int main(void) {
   printf("=== test_fswatch ===\n");
 
@@ -396,6 +447,8 @@ int main(void) {
   test_hidden_dirs_skipped();
   test_recreate_watch();
   test_nonrecursive_watch_stays_shallow();
+  test_nonrecursive_watch_existing_file();
+  test_recursive_tree_removal();
 
   printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail > 0 ? 1 : 0;

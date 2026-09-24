@@ -15,6 +15,7 @@ ifeq ($(UNAME_S),Linux)
   DL_LIB := -ldl
   NCURSES_LIB := -lncursesw
   PLUGIN_EXT := so
+  BIN_RPATH := -Wl,-rpath,'$(RPATH_ORIGIN)'
 else ifeq ($(UNAME_S),Darwin)
   PLATFORM_DEFINES := -D_DARWIN_C_SOURCE
   SHARED_EXT := dylib
@@ -25,6 +26,7 @@ else ifeq ($(UNAME_S),Darwin)
   DL_LIB :=
   NCURSES_LIB := -lncurses
   PLUGIN_EXT := dylib
+  BIN_RPATH := -Wl,-rpath,'$(RPATH_ORIGIN)' -Wl,-rpath,'@loader_path/../lib'
   BREW_PACKAGES := ncurses readline openssl@3 utf8proc onnxruntime
   BREW_CFLAGS := $(foreach p,$(BREW_PACKAGES),$(shell brew --prefix $(p) 2>/dev/null | sed 's|^|-I|; s|$$|/include|'))
   BREW_LDFLAGS := $(foreach p,$(BREW_PACKAGES),$(shell brew --prefix $(p) 2>/dev/null | sed 's|^|-L|; s|$$|/lib|'))
@@ -152,7 +154,7 @@ $(LIB_REAL): $(LIB_OBJ)
 
 # Binary: main.o links against libnash.so
 $(BIN): src/main.o $(LIB_REAL)
-	$(CC) $(CFLAGS) -o $@ $< -L. -lnash -Wl,-rpath,'$(RPATH_ORIGIN)' $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< -L. -lnash $(BIN_RPATH) $(LDFLAGS)
 
 # Test binaries
 TEST_BIN = tests/test_memory tests/test_store tests/test_config \
