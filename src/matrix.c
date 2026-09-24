@@ -28,11 +28,26 @@
 #include <errno.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/inotify.h>
+#endif
 #include <dirent.h>
 #include <poll.h>
 #include <curl/curl.h>
 #include <pthread.h>
+
+/* Use a project-specific helper rather than relying on explicit_bzero(),
+ * whose availability varies with the platform SDK and feature level.  The
+ * compiler barrier prevents the fallback memset being optimized away while
+ * clearing credentials. */
+static void mx_secure_zero(void *buf, size_t len) {
+#if defined(__STDC_LIB_EXT1__)
+  memset_s(buf, len, 0, len);
+#else
+  memset(buf, 0, len);
+  __asm__ __volatile__("" : : "r"(buf) : "memory");
+#endif
+}
 
 /* Matrix API constants */
 #define MX_SYNC_TIMEOUT 5000 /* /sync timeout in ms (5 seconds) */
@@ -592,11 +607,11 @@ int matrix_setup(matrix_ctx_t *ctx) {
 
   /* Step 3: Login */
   if (mx_api_login(ctx, username, buf) != 0) {
-    explicit_bzero(buf, sizeof(buf));
+    mx_secure_zero(buf, sizeof(buf));
     fprintf(stderr, "[matrix] ✗ Login failed\n");
     return -1;
   }
-  explicit_bzero(buf, sizeof(buf)); /* clear password from stack */
+  mx_secure_zero(buf, sizeof(buf)); /* clear password from stack */
   fprintf(stderr, "[matrix] ✓ Logged in as %s\n\n", ctx->user_id);
 
   /* Step 4: Room setup */
@@ -2386,10 +2401,12 @@ void *matrix_run(void *arg) {
     }
   }
 
-  /* Set up inotify on outbox */
+  /* Linux uses inotify for prompt delivery; other platforms scan the atomic
+   * mailbox outbox after each Matrix sync. */
   char outbox_path[512];
   snprintf(outbox_path, sizeof(outbox_path), "%s/outbox", ctx->mailbox_dir);
 
+#ifdef __linux__
   int ifd = inotify_init1(IN_NONBLOCK);
   int iwd = -1;
   if (ifd >= 0) {
@@ -2402,6 +2419,7 @@ void *matrix_run(void *arg) {
     fprintf(stderr, "[matrix] inotify_init failed: %s (will use polling)\n",
             strerror(errno));
   }
+#endif
 
   /* Pending ask ID and room for routing replies as answers */
   char pending_ask_id[128] = {0};
@@ -2716,7 +2734,8 @@ void *matrix_run(void *arg) {
 
     if (*ctx->shutdown) break;
 
-    /* ── Phase 2: Check outbox ────────────────────────────── */
+/* ── Phase 2: Check outbox ────────────────────────────── */
+#ifdef __linux__
     if (ifd >= 0) {
       char evbuf[NASH_PATH_MAX]
         __attribute__((aligned(__alignof__(struct inotify_event))));
@@ -2766,6 +2785,9 @@ void *matrix_run(void *arg) {
     } else {
       mx_scan_outbox(ctx);
     }
+#else
+    mx_scan_outbox(ctx);
+#endif
 
     /* Periodically save since_token */
     if (++save_counter >= 60) { /* every ~60 sync cycles ≈ 5 min */
@@ -2784,8 +2806,10 @@ void *matrix_run(void *arg) {
   mx_api_send_message(ctx, "🔴 Nash bot going offline", NULL);
 
   /* Cleanup */
+#ifdef __linux__
   if (iwd >= 0) inotify_rm_watch(ifd, iwd);
   if (ifd >= 0) close(ifd);
+#endif
 
   /* Save final since_token */
   mx_config_save(ctx);

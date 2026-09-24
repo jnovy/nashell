@@ -27,22 +27,29 @@
 /* Provide globals that linked modules reference */
 int g_path_given = 0;
 
+#ifdef __APPLE__
+#define PLUGIN_EXT ".dylib"
+#else
+#define PLUGIN_EXT ".so"
+#endif
+
 /* Helper: get path relative to test binary location.
  * Tests are run from the project root, so "tests/X.so" works. */
-static const char *SAMPLE_SO = "tests/sample_plugin.so";
-static const char *BAD_ABI_SO = "tests/sample_plugin_bad_abi.so";
-static const char *MULTI_SO = "tests/sample_plugin_multi.so";
+static const char *SAMPLE_SO = "tests/sample_plugin" PLUGIN_EXT;
+static const char *BAD_ABI_SO = "tests/sample_plugin_bad_abi" PLUGIN_EXT;
+static const char *MULTI_SO = "tests/sample_plugin_multi" PLUGIN_EXT;
 static const char *PLUGIN_DIR = "tests/plugin_dir";
 
 /* ---- Helper to set up a temp plugin directory ---- */
 static void setup_plugin_dir(void) {
   mkdir(PLUGIN_DIR, 0755);
-  /* Symlink sample_plugin.so and multi .so into the dir */
+  /* Symlink sample plugins into the dir */
   char cmd[512];
   snprintf(cmd, sizeof(cmd),
-           "ln -sf $(pwd)/tests/sample_plugin.so %s/sample_plugin.so && "
-           "ln -sf $(pwd)/tests/sample_plugin_multi.so %s/sample_plugin_multi.so",
-           PLUGIN_DIR, PLUGIN_DIR);
+           "ln -sf $(pwd)/tests/sample_plugin%s %s/sample_plugin%s && "
+           "ln -sf $(pwd)/tests/sample_plugin_multi%s %s/sample_plugin_multi%s",
+           PLUGIN_EXT, PLUGIN_DIR, PLUGIN_EXT,
+           PLUGIN_EXT, PLUGIN_DIR, PLUGIN_EXT);
   system(cmd);
 }
 

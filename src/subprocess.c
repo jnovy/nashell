@@ -33,7 +33,11 @@ static void scrub_env(void) {
 static void close_extra_fds(int keep_fd) {
   /* Prefer iterating /proc/self/fd for O(open_fds) instead of
      * O(sysconf(_SC_OPEN_MAX)) which can be up to 1M close() calls. */
+#ifdef __APPLE__
+  DIR *dp = opendir("/dev/fd");
+#else
   DIR *dp = opendir("/proc/self/fd");
+#endif
   if (dp) {
     int dir_fd = dirfd(dp);
     struct dirent *de;
@@ -116,7 +120,17 @@ subprocess_result_t subprocess_run(char *const argv[],
   subprocess_result_t r = {.exit_code = -1};
 
   int pipefd[2];
+#ifdef __APPLE__
+  if (pipe(pipefd) < 0) return r;
+  if (fcntl(pipefd[0], F_SETFD, FD_CLOEXEC) < 0 ||
+      fcntl(pipefd[1], F_SETFD, FD_CLOEXEC) < 0) {
+    close(pipefd[0]);
+    close(pipefd[1]);
+    return r;
+  }
+#else
   if (pipe2(pipefd, O_CLOEXEC) < 0) return r;
+#endif
 
   pid_t pid = fork();
   if (pid < 0) {
@@ -181,7 +195,7 @@ subprocess_result_t subprocess_run(char *const argv[],
       if (n == 0) break; /* EOF */
       if (n < 0) {
         if (errno == EAGAIN || errno == EINTR) continue; /* transient */
-        break; /* real error */
+        break;                                           /* real error */
       }
 
       /* Enforce byte cap with partial write */

@@ -29,7 +29,9 @@
 #include <errno.h>
 #include <time.h>
 #include <sys/stat.h>
+#ifdef __linux__
 #include <sys/inotify.h>
+#endif
 #include <dirent.h>
 #include <poll.h>
 #include <curl/curl.h>
@@ -185,8 +187,11 @@ static long long tg_api_create_forum_topic(telegram_ctx_t *ctx,
            TG_API_BASE, ctx->bot_token);
 
   cJSON *body = cJSON_CreateObject();
-  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
-    cJSON_AddRawToObject(body, "chat_id", _id); }
+  {
+    char _id[32];
+    snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id);
+  }
   cJSON_AddStringToObject(body, "name", name);
 
   char *body_str = cJSON_PrintUnformatted(body);
@@ -680,15 +685,20 @@ static long long tg_api_send_raw(telegram_ctx_t *ctx, const char *text,
 
   /* Build JSON body */
   cJSON *body = cJSON_CreateObject();
-  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
-    cJSON_AddRawToObject(body, "chat_id", _id); }
+  {
+    char _id[32];
+    snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id);
+  }
   if (thread_id != 0) {
-    char _tid[32]; snprintf(_tid, sizeof(_tid), "%lld", thread_id);
+    char _tid[32];
+    snprintf(_tid, sizeof(_tid), "%lld", thread_id);
     cJSON_AddRawToObject(body, "message_thread_id", _tid);
   }
   if (reply_to_message_id != 0) {
     cJSON *reply_params = cJSON_CreateObject();
-    char _rid[32]; snprintf(_rid, sizeof(_rid), "%lld", reply_to_message_id);
+    char _rid[32];
+    snprintf(_rid, sizeof(_rid), "%lld", reply_to_message_id);
     cJSON_AddRawToObject(reply_params, "message_id", _rid);
     cJSON_AddItemToObject(body, "reply_parameters", reply_params);
   }
@@ -856,10 +866,14 @@ static int tg_api_send_rich(telegram_ctx_t *ctx, const char *md_text,
 
   /* Build JSON body */
   cJSON *body = cJSON_CreateObject();
-  { char _id[32]; snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
-    cJSON_AddRawToObject(body, "chat_id", _id); }
+  {
+    char _id[32];
+    snprintf(_id, sizeof(_id), "%lld", ctx->chat_id);
+    cJSON_AddRawToObject(body, "chat_id", _id);
+  }
   if (thread_id != 0) {
-    char _tid[32]; snprintf(_tid, sizeof(_tid), "%lld", thread_id);
+    char _tid[32];
+    snprintf(_tid, sizeof(_tid), "%lld", thread_id);
     cJSON_AddRawToObject(body, "message_thread_id", _tid);
   }
   cJSON_AddStringToObject(body, "rich_text", md_text);
@@ -1395,10 +1409,12 @@ void *telegram_run(void *arg) {
 
   fprintf(stderr, "[telegram] bridge thread started\n");
 
-  /* Set up inotify on outbox */
+  /* Linux uses inotify for prompt delivery; other platforms scan the atomic
+   * mailbox outbox after each short Telegram poll. */
   char outbox_path[512];
   snprintf(outbox_path, sizeof(outbox_path), "%s/outbox", ctx->mailbox_dir);
 
+#ifdef __linux__
   int ifd = inotify_init1(IN_NONBLOCK);
   int iwd = -1;
   if (ifd >= 0) {
@@ -1411,6 +1427,7 @@ void *telegram_run(void *arg) {
     fprintf(stderr, "[telegram] inotify_init failed: %s (will use polling)\n",
             strerror(errno));
   }
+#endif
 
   /* Process any existing outbox files */
   tg_scan_outbox(ctx);
@@ -1696,7 +1713,8 @@ void *telegram_run(void *arg) {
 
     if (*ctx->shutdown) break;
 
-    /* ── Phase 2: Check outbox for results/questions ─────────── */
+/* ── Phase 2: Check outbox for results/questions ─────────── */
+#ifdef __linux__
     if (ifd >= 0) {
       /* Read inotify events (non-blocking) */
       char evbuf[NASH_PATH_MAX]
@@ -1721,6 +1739,9 @@ void *telegram_run(void *arg) {
       /* Fallback: poll-based outbox scan */
       tg_scan_outbox(ctx);
     }
+#else
+    tg_scan_outbox(ctx);
+#endif
 
     /* Periodically re-sync workspaces (every ~30 iterations ≈ 60s) */
     if (++ws_sync_counter >= 30) {
@@ -1730,8 +1751,10 @@ void *telegram_run(void *arg) {
   }
 
   /* Cleanup */
+#ifdef __linux__
   if (iwd >= 0) inotify_rm_watch(ifd, iwd);
   if (ifd >= 0) close(ifd);
+#endif
 
   fprintf(stderr, "[telegram] bridge thread stopped\n");
   return NULL;
