@@ -4,7 +4,7 @@
  * All operations succeed silently but do nothing.  This allows Nash
  * to compile and run on any platform without ifdefs in the callers.
  */
-#ifndef __linux__
+#if !defined(__linux__) && !defined(__APPLE__)
 
 #include "fswatch.h"
 #include <stdlib.h>
@@ -24,7 +24,9 @@ fswatch_t *fswatch_init(fswatch_cb cb, void *userdata) {
 }
 
 int fswatch_add(fswatch_t *w, const char *path, int recursive) {
-  (void)w; (void)path; (void)recursive;
+  (void)w;
+  (void)path;
+  (void)recursive;
   return 0;
 }
 
@@ -42,4 +44,4 @@ void fswatch_free(fswatch_t *w) {
   free(w);
 }
 
-#endif /* !__linux__ */
+#endif /* unsupported platform */

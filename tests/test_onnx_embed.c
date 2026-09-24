@@ -1,6 +1,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 #include "embedding_onnx.h"
 
 int main(void) {
@@ -8,11 +9,16 @@ int main(void) {
   const char *home = getenv("HOME");
   char path[4096];
   if (home) {
-    snprintf(path, sizeof(path), "%s/models/all-MiniLM-L6-v2", home);
+    /* ~/.nash/models is the current setup location.  Keep the older
+     * ~/models location working for users who installed the model there. */
+    snprintf(path, sizeof(path), "%s/.nash/models/all-MiniLM-L6-v2", home);
+    if (access(path, F_OK) != 0)
+      snprintf(path, sizeof(path), "%s/models/all-MiniLM-L6-v2", home);
     model_dir = path;
   }
 
-  printf("Initializing ONNX embedding from: %s\n", model_dir);
+  printf("Initializing ONNX embedding from: %s\n",
+         model_dir ? model_dir : "(HOME is not set)");
   onnx_embed_ctx_t *ctx = onnx_embed_init(model_dir);
   if (!ctx) {
     fprintf(stderr, "Failed to initialize ONNX embedding\n");

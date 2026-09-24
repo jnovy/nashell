@@ -214,8 +214,12 @@ int tool_plugin_load_dir(const char *dir_path) {
   while ((ent = readdir(d)) != NULL) {
     const char *name = ent->d_name;
     size_t len = strlen(name);
-    if (len < 4 || strcmp(name + len - 3, ".so") != 0)
-      continue;
+    int is_plugin = len >= 4 && strcmp(name + len - 3, ".so") == 0;
+#ifdef __APPLE__
+    is_plugin = is_plugin ||
+                (len >= 7 && strcmp(name + len - 6, ".dylib") == 0);
+#endif
+    if (!is_plugin) continue;
 
     char path[4096];
     path_join(path, sizeof(path), dir_path, name);

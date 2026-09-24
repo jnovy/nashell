@@ -6,12 +6,14 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
-#include <sys/inotify.h>
 #include <dirent.h>
 #include <unistd.h>
 #include <time.h>
 #include <errno.h>
 #include <poll.h>
+#ifdef __linux__
+#include <sys/inotify.h>
+#endif
 
 #include "frontend_headless.h"
 
@@ -87,10 +89,6 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
   nash_log("[mailbox] question written: %s", outpath);
   nash_log("[mailbox] waiting for answer: inbox/ask_%s", msg_id);
 
-  /* Wait for answer file in inbox via inotify */
-  char inbox_dir[NASH_PATH_MAX];
-  snprintf(inbox_dir, sizeof(inbox_dir), "%s/inbox", mailbox_dir);
-
   char answer_file[NASH_PATH_MAX];
   snprintf(answer_file, sizeof(answer_file), "%s/inbox/ask_%s",
            mailbox_dir, msg_id);
@@ -100,7 +98,12 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
   answer = read_file(answer_file);
   if (answer) goto got_answer;
 
-  /* Set up inotify */
+  /* Keep the existing Linux inotify implementation unchanged.  Darwin's
+   * directory event API does not expose the created filename reliably enough
+   * for this single-answer protocol, so it polls the atomic answer file. */
+#ifdef __linux__
+  char inbox_dir[NASH_PATH_MAX];
+  snprintf(inbox_dir, sizeof(inbox_dir), "%s/inbox", mailbox_dir);
   int ifd = inotify_init1(IN_NONBLOCK);
   if (ifd < 0) {
     nash_log("[mailbox] inotify_init failed: %s, falling back to poll",
@@ -159,13 +162,11 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
           return NULL;
         }
       }
-
       int ret = poll(&pfd, 1, remaining_ms > 0 ? remaining_ms : 5000);
       if (ret < 0) {
         if (errno == EINTR) break; /* signal received — let caller check shutdown */
         break;
       }
-
       if (ret > 0) {
         /* Drain inotify events */
         char evbuf[NASH_PATH_MAX]
@@ -184,7 +185,6 @@ char *mailbox_ask(const char *mailbox_dir, const char *question, int timeout_sec
           }
         }
       }
-
       /* Periodic check (handles edge cases — read directly, no TOCTOU) */
       answer = read_file(answer_file);
       if (answer) {
@@ -206,6 +206,18 @@ read_answer:
              answer_file);
     return NULL;
   }
+#else
+  time_t deadline = timeout_sec > 0 ? time(NULL) + timeout_sec : 0;
+  while (!answer) {
+    if (deadline && time(NULL) >= deadline) {
+      nash_log("[mailbox] timeout waiting for answer");
+      return NULL;
+    }
+    struct timespec delay = {.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000};
+    nanosleep(&delay, NULL);
+    answer = read_file(answer_file);
+  }
+#endif
 
 got_answer:
   /* Clean up processed files */
@@ -256,7 +268,10 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
                         int timeout_sec) {
   char inbox_dir[NASH_PATH_MAX];
   snprintf(inbox_dir, sizeof(inbox_dir), "%s/inbox", mailbox_dir);
-
+#ifdef __APPLE__
+  time_t start = time(NULL);
+rescan:;
+#endif
   /* First check for command files (cmd_*) — return immediately so
      * the daemon loop can handle session reset before processing tasks. */
   DIR *dir = opendir(inbox_dir);
@@ -306,6 +321,16 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
     closedir(dir);
   }
 
+  /* macOS intentionally polls this mailbox directory.  The bridge protocol
+   * is atomic-file based, so scanning is reliable and avoids translating
+   * kqueue's directory-level events into Linux inotify filenames. */
+#ifdef __APPLE__
+  if (timeout_sec > 0 && time(NULL) - start >= timeout_sec)
+    return NULL;
+  struct timespec delay = {.tv_sec = 0, .tv_nsec = 100 * 1000 * 1000};
+  nanosleep(&delay, NULL);
+  goto rescan;
+#else
   /* No existing tasks — watch with inotify */
   int ifd = inotify_init1(IN_NONBLOCK);
   if (ifd < 0) {
@@ -444,6 +469,7 @@ char *mailbox_wait_task(const char *mailbox_dir, char **task_id_out,
   inotify_rm_watch(ifd, wd);
   close(ifd);
   return NULL;
+#endif
 }
 
 

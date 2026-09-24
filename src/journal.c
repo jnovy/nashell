@@ -10,7 +10,7 @@
 #include <sys/types.h>
 #include <time.h>
 #include <sys/file.h> /* flock */
-#include <unistd.h>   /* fdatasync, fileno */
+#include <unistd.h> /* fdatasync, fileno */
 
 /* Crash handler state: updated by journal_append() so the crash handler
  * (SIGSEGV/SIGABRT/SIGBUS) in main.c can write a signal_death entry
@@ -227,8 +227,21 @@ int journal_append(journal_t *j, int react_loop, int step, const char *tool,
   fprintf(f, "%s\n", json);
   free(json);
   cJSON_Delete(entry);
-  fflush(f);
-  fdatasync(fileno(f));
+  if (fflush(f) != 0) {
+    fclose(f);
+    pthread_mutex_unlock(&j->mtx);
+    return -1;
+  }
+#if defined(__APPLE__)
+  int sync_rc = fsync(fileno(f));
+#else
+  int sync_rc = fdatasync(fileno(f));
+#endif
+  if (sync_rc != 0) {
+    fclose(f);
+    pthread_mutex_unlock(&j->mtx);
+    return -1;
+  }
   fclose(f);
   pthread_mutex_unlock(&j->mtx); /* FIX CRIT2 */
   return 0;

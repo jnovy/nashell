@@ -4,7 +4,10 @@ nash
 *.tar.gz
 *.tar.zst
 libnash.so*
+libnash*.dylib
 tests/*.so
+tests/*.dylib
+*.dSYM/
 tests/test_*
 !tests/test_*.c
 !tests/test_*.h
@@ -34,6 +37,9 @@ prime_numbers
 prime_numbers.c
 fixed_point_sin
 fixed_point_sin.c
+
+# Local agent instructions
+CODEX.md
 
 # Editor/IDE
 *.swp

@@ -2092,15 +2092,19 @@ static int run_tui(nash_ctx_t *ctx, const char *query,
      * On other platforms: fall back to nanosleep (fswatch_fd returns -1). */
     {
       int wfd = fswatcher ? fswatch_fd(fswatcher) : -1;
+      int watch_ready = 1;
       if (wfd >= 0) {
         struct pollfd pfd = {.fd = wfd, .events = POLLIN};
         poll(&pfd, 1, 50); /* 50ms timeout */
-        if (pfd.revents & POLLIN)
-          fswatch_drain(fswatcher);
+        watch_ready = (pfd.revents & POLLIN) != 0;
       } else {
         struct timespec ts = {0, 50000000};
         nanosleep(&ts, NULL); /* 50ms fallback */
       }
+      /* Native backends expose a pollable descriptor; the no-op backend
+       * remains non-pollable and simply has nothing to drain. */
+      if (fswatcher && watch_ready)
+        fswatch_drain(fswatcher);
     }
   }
 

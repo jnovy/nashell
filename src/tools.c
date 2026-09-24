@@ -1013,9 +1013,19 @@ cJSON *plan_replay_journal_dir(const char *session_dir) {
 cJSON *plan_subtask_links(const char *session_dir) {
   cJSON *root = plan_replay_journal_dir(session_dir);
   if (!root) return cJSON_CreateObject();
-  cJSON *links = cJSON_DetachItemFromObject(root, "subtask_links");
+  cJSON *full_links = cJSON_GetObjectItem(root, "subtask_links");
+  /* This public helper predates link metadata and returns the original
+   * child-name -> parent-step mapping.  Keep that ABI while the replay root
+   * retains richer objects (step plus optional result ref) for rendering. */
+  cJSON *links = cJSON_CreateObject();
+  cJSON *item;
+  cJSON_ArrayForEach(item, full_links) {
+    int step = cJSON_IsNumber(item) ? (int)item->valuedouble
+                                    : json_int(item, "step", 0);
+    cJSON_AddNumberToObject(links, item->string, step);
+  }
   cJSON_Delete(root);
-  return links ? links : cJSON_CreateObject();
+  return links;
 }
 
 /* Load plan steps by replaying journal.  Returns cJSON array (caller owns)
@@ -1690,6 +1700,14 @@ static tool_result_t tool_plan(tool_ctx_t *ctx, cJSON *params) {
 
     tools_inject_thought(ctx, params);
     tool_journal(ctx, "plan", params, alias, 0, done, NULL, NULL);
+    /* The parent journal may contain subtask spawns between plan calls.
+     * Replaying after this check lets the scratchpad interleave their plans
+     * under the step that was active at spawn time. */
+    cJSON *replayed = plan_replay_journal_dir(ctx->session_dir);
+    if (replayed) {
+      plan_project_to_scratchpad(ctx, replayed);
+      cJSON_Delete(replayed);
+    }
     cJSON_Delete(steps);
     char *ref_copy = alias ? xstrdup(alias) : NULL;
     free(alias);
@@ -1951,7 +1969,10 @@ static const tool_param_t done_params[] = {
   TOOL_PARAM_END};
 
 static const tool_param_t plan_params[] = {
-  TOOL_PARAM("op", "string", "Operation: add_item, done, check, uncheck, status", 1),
+  /* Either op (the incremental API) or result (the legacy numbered-plan
+   * API) is required.  This cannot be expressed by the flat parameter
+   * descriptor, so tool_plan() performs the combined validation. */
+  TOOL_PARAM("op", "string", "Operation: add_item, done, check, uncheck, status", 0),
   TOOL_PARAM("text", "string", "Step description (for add_item)", 0),
   TOOL_PARAM("step", "integer", "Step number to check/uncheck (1-based)", 0),
   TOOL_PARAM("evidence", "string", "Ref (e.g. R0S5) proving step completion", 0),

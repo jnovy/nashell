@@ -1,7 +1,40 @@
 VERSION ?= 0.1.2
 
+# Platform-specific linker and loader conventions.  Keep CC overridable: Apple
+# Clang is sufficient, and requiring a versioned Homebrew GCC only makes the
+# build needlessly fragile.
+UNAME_S := $(shell uname -s)
+
+ifeq ($(UNAME_S),Linux)
+  PLATFORM_DEFINES := -D_DEFAULT_SOURCE
+  SHARED_EXT := so
+  SHARED_FLAG := -shared
+  SONAME_FLAG := -Wl,-soname,libnash.so.0
+  RPATH_ORIGIN := $$ORIGIN
+  EXPORT_DYNAMIC := -rdynamic
+  DL_LIB := -ldl
+  NCURSES_LIB := -lncursesw
+  PLUGIN_EXT := so
+else ifeq ($(UNAME_S),Darwin)
+  PLATFORM_DEFINES := -D_DARWIN_C_SOURCE
+  SHARED_EXT := dylib
+  SHARED_FLAG := -dynamiclib
+  SONAME_FLAG := -Wl,-install_name,@rpath/libnash.0.dylib
+  RPATH_ORIGIN := @loader_path
+  EXPORT_DYNAMIC :=
+  DL_LIB :=
+  NCURSES_LIB := -lncurses
+  PLUGIN_EXT := dylib
+  BREW_PACKAGES := ncurses readline openssl@3 utf8proc onnxruntime
+  BREW_CFLAGS := $(foreach p,$(BREW_PACKAGES),$(shell brew --prefix $(p) 2>/dev/null | sed 's|^|-I|; s|$$|/include|'))
+  BREW_LDFLAGS := $(foreach p,$(BREW_PACKAGES),$(shell brew --prefix $(p) 2>/dev/null | sed 's|^|-L|; s|$$|/lib|'))
+else
+  $(error Unsupported platform: $(UNAME_S))
+endif
+
 CC      ?= gcc
-CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE
+CFLAGS  ?= -Wall -g -Wextra -Wunused-function -O2 -std=c11 -fPIC -D_POSIX_C_SOURCE=200809L $(PLATFORM_DEFINES)
+CFLAGS  += $(BREW_CFLAGS)
 # ONNX Runtime: requires onnxruntime-devel (headers) to build.
 # For linking, use pip-installed libonnxruntime if no system package.
 ORT_LIB := $(shell python3 -c "import onnxruntime; import os; print(os.path.dirname(onnxruntime.__file__) + '/capi')" 2>/dev/null)
@@ -13,7 +46,7 @@ endif
 
 # Device subsystem (VNC, HEVC streaming, Tesseract OCR) is now a separate
 # plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
-LDFLAGS ?= -rdynamic -lcurl -lcrypto -lreadline -lncursesw -lpthread -lm -lutf8proc -ldl $(ORT_LDFLAGS)
+LDFLAGS ?= $(EXPORT_DYNAMIC) -lcurl -lcrypto -lreadline $(NCURSES_LIB) -lpthread -lm -lutf8proc $(DL_LIB) $(BREW_LDFLAGS) $(ORT_LDFLAGS)
 
 # AddressSanitizer for heap corruption detection (opt-in: make SANITIZE=1)
 ifdef SANITIZE
@@ -82,14 +115,21 @@ SRC     = src/main.c src/str.c src/cJSON.c \
           src/predict.c \
           src/harness_metrics.c \
           src/fswatch_linux.c \
+          src/fswatch_kqueue.c \
           src/fswatch_noop.c \
           src/mw_builtin.c
 OBJ     = $(SRC:.c=.o)
 BIN     = nash
 
-LIB_REAL    = libnash.so.$(VERSION)
-LIB_SONAME  = libnash.so.0
-LIB_LINKER  = libnash.so
+ifeq ($(UNAME_S),Linux)
+  LIB_REAL = libnash.so.$(VERSION)
+  LIB_SONAME = libnash.so.0
+  LIB_LINKER = libnash.so
+else
+  LIB_REAL = libnash.$(VERSION).dylib
+  LIB_SONAME = libnash.0.dylib
+  LIB_LINKER = libnash.dylib
+endif
 
 all: $(LIB_REAL) $(BIN)
 
@@ -106,13 +146,13 @@ LIB_OBJ = $(LIB_SRC:.c=.o)
 
 # Shared library: everything except main.c
 $(LIB_REAL): $(LIB_OBJ)
-	$(CC) -shared -Wl,-soname,$(LIB_SONAME) -o $@ $^ $(LDFLAGS)
+	$(CC) $(SHARED_FLAG) $(SONAME_FLAG) -o $@ $^ $(LDFLAGS)
 	ln -sf $(LIB_REAL) $(LIB_SONAME)
 	ln -sf $(LIB_SONAME) $(LIB_LINKER)
 
 # Binary: main.o links against libnash.so
 $(BIN): src/main.o $(LIB_REAL)
-	$(CC) $(CFLAGS) -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN' $(LDFLAGS)
+	$(CC) $(CFLAGS) -o $@ $< -L. -lnash -Wl,-rpath,'$(RPATH_ORIGIN)' $(LDFLAGS)
 
 # Test binaries
 TEST_BIN = tests/test_memory tests/test_store tests/test_config \
@@ -132,18 +172,18 @@ TEST_BIN = tests/test_memory tests/test_store tests/test_config \
            tests/test_tool_failure
 
 # Sample plugin shared objects for dlopen testing
-SAMPLE_PLUGINS = tests/sample_plugin.so tests/sample_plugin_bad_abi.so \
-                 tests/sample_plugin_multi.so
+SAMPLE_PLUGINS = tests/sample_plugin.$(PLUGIN_EXT) tests/sample_plugin_bad_abi.$(PLUGIN_EXT) \
+                 tests/sample_plugin_multi.$(PLUGIN_EXT)
 
-tests/sample_%.so: tests/sample_%.c src/tool_plugin.h src/cJSON.h $(LIB_REAL)
-	$(CC) -shared -fPIC $(CFLAGS) -I src -o $@ $< -L. -lnash
+tests/sample_%.$(PLUGIN_EXT): tests/sample_%.c src/tool_plugin.h src/cJSON.h $(LIB_REAL)
+	$(CC) $(SHARED_FLAG) -fPIC $(CFLAGS) -I src -o $@ $< -L. -lnash
 
 # dlopen test depends on sample .so files
 tests/test_tool_plugin_dlopen: tests/test_tool_plugin_dlopen.c $(LIB_REAL) $(SAMPLE_PLUGINS)
-	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
+	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$(RPATH_ORIGIN)/..' $(LDFLAGS)
 
 tests/test_%: tests/test_%.c $(LIB_REAL)
-	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$$ORIGIN/..' $(LDFLAGS)
+	$(CC) $(CFLAGS) -I src -o $@ $< -L. -lnash -Wl,-rpath,'$(RPATH_ORIGIN)/..' $(LDFLAGS)
 
 test: $(TEST_BIN)
 	@echo "=== Running tests ==="
@@ -152,11 +192,32 @@ test: $(TEST_BIN)
 		echo "--- $$t ---"; \
 		if ./$$t; then echo "PASS"; else echo "FAIL"; failures=$$((failures+1)); fi; \
 	done; \
-	echo "=== $$failures failures ==="
+	echo "=== $$failures failures ==="; \
+	exit $$failures
+
+# Verify the Linux build from macOS without leaving container-built objects in
+# the working tree.  The named container is reused after its first setup.
+TEST_CONTAINER ?= nash-test-model
+NASH_MODEL_DIR ?= $(HOME)/.nash/models/all-MiniLM-L6-v2
+test-container:
+	@if podman container exists $(TEST_CONTAINER) 2>/dev/null; then \
+	  podman start $(TEST_CONTAINER) 2>/dev/null || true; \
+	else \
+	  podman run --name $(TEST_CONTAINER) -d \
+	    -v $(CURDIR):/workspace:Z -w /workspace \
+	    -v $(NASH_MODEL_DIR):/root/.nash/models/all-MiniLM-L6-v2:ro,Z \
+	    registry.fedoraproject.org/fedora:latest sleep infinity; \
+	  podman exec $(TEST_CONTAINER) dnf install -y gcc make libcurl-devel openssl-devel readline-devel ncurses-devel utf8proc-devel onnxruntime-devel; \
+	fi
+	@status=0; \
+	podman exec $(TEST_CONTAINER) bash -c "make clean && make && make test" || status=$$?; \
+	$(MAKE) clean; \
+	exit $$status
 
 clean:
 	rm -f $(OBJ) $(BIN) $(LIB_REAL) $(LIB_SONAME) $(LIB_LINKER) $(TEST_BIN) $(SAMPLE_PLUGINS)
-	rm -rf tests/plugin_dir
+	rm -f libnash.so* libnash*.dylib
+	rm -rf tests/plugin_dir tests/*.dSYM
 
 # Source tarball for RPM builds (matches spec Source0: nash-VERSION.tar.zst)
 dist:
@@ -181,4 +242,4 @@ install: all
 	install -d $(DESTDIR)$(NASH_DATADIR)/playbooks
 	install -m 644 playbooks/*.yaml $(DESTDIR)$(NASH_DATADIR)/playbooks/
 
-.PHONY: all clean test dist fmt install
+.PHONY: all clean test test-container dist fmt install
