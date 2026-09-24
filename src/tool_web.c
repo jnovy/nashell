@@ -373,12 +373,23 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
                             "Install podman/docker or configure a running SearXNG instance "
                             "in ~/.nash/config.toml [search] section.");
   }
-  results_text = searxng_search(searxng_url, query, &result_count, search_timeout);
+  char *engine_errors = NULL;
+  results_text = searxng_search(searxng_url, query, &result_count,
+                                search_timeout, &engine_errors);
 
   if (!results_text || result_count == 0) {
-    char errmsg[512];
-    snprintf(errmsg, sizeof(errmsg),
-             "no results found for query: %s", query);
+    char errmsg[1024];
+    if (engine_errors && engine_errors[0]) {
+      snprintf(errmsg, sizeof(errmsg),
+               "no results found for query: %s "
+               "(all search engines blocked: %s). "
+               "Use web_fetch with direct URLs instead.",
+               query, engine_errors);
+    } else {
+      snprintf(errmsg, sizeof(errmsg),
+               "no results found for query: %s", query);
+    }
+    free(engine_errors);
     /* Store error to .store/ so it gets a ref for reactRX.md hyperlink */
     char *err_hash = store_save(ctx->store, errmsg);
     char *err_alias = tool_register_alias(ctx, err_hash ? err_hash : "");
@@ -390,6 +401,7 @@ tool_result_t tool_web_search(tool_ctx_t *ctx, cJSON *params) {
     free(results_text);
     return tools_make_error(errmsg);
   }
+  free(engine_errors);
 
   /* Store results */
   char *hash = store_save(ctx->store, results_text);

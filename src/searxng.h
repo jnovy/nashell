@@ -13,9 +13,12 @@ int ensure_searxng(const char *searxng_url);
 
 /* Perform a search using SearXNG JSON API.
  * Returns a formatted results string (caller frees), or NULL on failure.
- * *out_count receives the number of results. */
+ * *out_count receives the number of results.
+ * If engine_errors is non-NULL, it receives a malloc'd string describing
+ * why engines failed (e.g. "brave=rate limited, duckduckgo=CAPTCHA").
+ * Caller must free *engine_errors. */
 char *searxng_search(const char *searxng_url, const char *query,
-                     int *out_count, long timeout);
+                     int *out_count, long timeout, char **engine_errors);
 
 /* Tear down auto-started SearXNG container (called on nash exit). */
 void web_search_cleanup(void);

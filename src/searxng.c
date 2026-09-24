@@ -263,6 +263,30 @@ static void searxng_log_unresponsive(cJSON *root) {
   }
 }
 
+/* Build a brief summary of engine errors for the agent.
+ * Returns a malloc'd string like "brave=rate limited, duckduckgo=CAPTCHA"
+ * or NULL if no unresponsive engines. Caller must free. */
+static char *searxng_engine_error_summary(cJSON *root) {
+  cJSON *unresponsive = cJSON_GetObjectItem(root, "unresponsive_engines");
+  if (!unresponsive || !cJSON_IsArray(unresponsive)) return NULL;
+  int n = cJSON_GetArraySize(unresponsive);
+  if (n == 0) return NULL;
+
+  str_t summary = str_new(256);
+  for (int i = 0; i < n; i++) {
+    cJSON *pair = cJSON_GetArrayItem(unresponsive, i);
+    if (!pair || !cJSON_IsArray(pair) || cJSON_GetArraySize(pair) < 2)
+      continue;
+    cJSON *engine = cJSON_GetArrayItem(pair, 0);
+    cJSON *reason = cJSON_GetArrayItem(pair, 1);
+    const char *ename = (engine && engine->valuestring) ? engine->valuestring : "?";
+    const char *ereason = (reason && reason->valuestring) ? reason->valuestring : "?";
+    if (summary.len > 0) str_appendf(&summary, ", ");
+    str_appendf(&summary, "%s=%s", ename, ereason);
+  }
+  return str_steal(&summary);
+}
+
 /* Restart the SearXNG container. Returns 0 on success. */
 static int searxng_restart_container(const char *searxng_url) {
   nash_log("[nash] All SearXNG engines unresponsive — restarting container...");
@@ -284,11 +308,14 @@ static int searxng_restart_container(const char *searxng_url) {
 /* Internal: perform a single SearXNG query and parse results.
  * Returns formatted text (caller frees) or NULL.
  * Sets *out_count to number of results found.
- * Sets *all_unresponsive to 1 if results are empty AND all engines timed out. */
+ * Sets *all_unresponsive to 1 if results are empty AND all engines timed out.
+ * If out_error_summary is non-NULL, receives a malloc'd engine error string. */
 static char *searxng_search_once(const char *searxng_url, const char *query,
                                  int *out_count, long timeout,
-                                 int *all_unresponsive) {
+                                 int *all_unresponsive,
+                                 char **out_error_summary) {
   *all_unresponsive = 0;
+  if (out_error_summary) *out_error_summary = NULL;
 
   CURL *enc = curl_easy_init();
   if (!enc) return NULL;
@@ -327,6 +354,8 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
     if (n_unresponsive > 0) {
       searxng_log_unresponsive(root);
       *all_unresponsive = 1;
+      if (out_error_summary)
+        *out_error_summary = searxng_engine_error_summary(root);
     }
     cJSON_Delete(root);
     return NULL;
@@ -360,8 +389,11 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
   int n_unresponsive = searxng_count_unresponsive(root);
   if (n_unresponsive > 0) {
     searxng_log_unresponsive(root);
-    if (count == 0)
+    if (count == 0) {
       *all_unresponsive = 1;
+      if (out_error_summary)
+        *out_error_summary = searxng_engine_error_summary(root);
+    }
   }
 
   cJSON_Delete(root);
@@ -376,15 +408,30 @@ static char *searxng_search_once(const char *searxng_url, const char *query,
 }
 
 /* Perform a search using SearXNG JSON API.
- * On any failure (0 results), immediately restart the container to clear
- * all engine suspensions/bans/CAPTCHAs, then retry once.
+ * On failure (0 results), restart the container to clear engine
+ * suspensions/bans/CAPTCHAs, then retry once - but with a cooldown
+ * and circuit breaker to avoid futile restarts when all engines are
+ * rate-limited by upstream providers.
  * Returns a formatted results string (caller frees), or NULL on failure.
- * *out_count receives the number of results. */
+ * *out_count receives the number of results.
+ * If engine_errors is non-NULL, receives a malloc'd string describing
+ * why engines failed. Caller must free *engine_errors. */
 char *searxng_search(const char *searxng_url, const char *query,
-                     int *out_count, long timeout) {
+                     int *out_count, long timeout, char **engine_errors) {
+  /* Cooldown and circuit breaker state (persistent across calls) */
+  static time_t last_search_time = 0;
+  static time_t last_restart_time = 0;
+  static int consecutive_restart_failures = 0;
+
+  /* Restart cooldown: don't restart more often than every 120s */
+  #define SEARXNG_RESTART_COOLDOWN 120
+  /* Circuit breaker: stop restarting after this many consecutive failures */
+  #define SEARXNG_MAX_RESTART_FAILURES 2
+
+  if (engine_errors) *engine_errors = NULL;
+
   /* Throttle: enforce minimum gap between queries to avoid upstream
      * rate limiting.  Only fires when queries are <3s apart (burst). */
-  static time_t last_search_time = 0;
   time_t now = time(NULL);
   if (last_search_time > 0) {
     int elapsed = (int)(now - last_search_time);
@@ -398,30 +445,73 @@ char *searxng_search(const char *searxng_url, const char *query,
   last_search_time = time(NULL);
 
   int all_unresponsive = 0;
+  char *error_summary = NULL;
   char *result = searxng_search_once(searxng_url, query, out_count, timeout,
-                                     &all_unresponsive);
+                                     &all_unresponsive, &error_summary);
 
-  /* If we got results, return them */
-  if (result) return result;
+  /* If we got results, reset circuit breaker and return */
+  if (result) {
+    consecutive_restart_failures = 0;
+    free(error_summary);
+    return result;
+  }
 
-  /* Always go nuclear: restart container to reset all engine state */
+  /* Check if restart is worth attempting */
+  now = time(NULL);
+  int since_last_restart = (last_restart_time > 0)
+                             ? (int)(now - last_restart_time) : 999;
+
+  if (consecutive_restart_failures >= SEARXNG_MAX_RESTART_FAILURES
+      && since_last_restart < SEARXNG_RESTART_COOLDOWN) {
+    nash_log("[nash] web_search: 0 results for '%s' - skipping restart "
+             "(circuit breaker: %d consecutive failures, %ds since last "
+             "restart, cooldown %ds)%s%s",
+             query, consecutive_restart_failures, since_last_restart,
+             SEARXNG_RESTART_COOLDOWN,
+             error_summary ? " engines: " : "",
+             error_summary ? error_summary : "");
+    if (engine_errors) {
+      *engine_errors = error_summary;
+      error_summary = NULL;
+    }
+    free(error_summary);
+    return NULL;
+  }
+
+  /* Attempt restart */
   nash_log("[nash] web_search: 0 results for '%s'%s "
-           "— restarting container...",
+           "- restarting container...",
            query, all_unresponsive ? " (engines unresponsive)" : "");
+  free(error_summary);
+  error_summary = NULL;
 
   if (searxng_restart_container(searxng_url) == 0) {
+    last_restart_time = time(NULL);
     int retry_unresponsive = 0;
+    char *retry_errors = NULL;
     result = searxng_search_once(searxng_url, query, out_count, timeout,
-                                 &retry_unresponsive);
+                                 &retry_unresponsive, &retry_errors);
     if (result) {
       nash_log("[nash] web_search: retry after container restart "
                "succeeded (%d results)",
                *out_count);
+      consecutive_restart_failures = 0;
+      free(retry_errors);
       return result;
     }
+    consecutive_restart_failures++;
     nash_log("[nash] web_search: retry after container restart "
-             "still returned 0 results%s",
-             retry_unresponsive ? " (engines still unresponsive)" : "");
+             "still returned 0 results%s (failure %d/%d)",
+             retry_unresponsive ? " (engines still unresponsive)" : "",
+             consecutive_restart_failures, SEARXNG_MAX_RESTART_FAILURES);
+    if (engine_errors) {
+      *engine_errors = retry_errors;
+      retry_errors = NULL;
+    }
+    free(retry_errors);
+  } else {
+    consecutive_restart_failures++;
+    last_restart_time = time(NULL);
   }
 
   return NULL;
