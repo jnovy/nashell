@@ -46,7 +46,7 @@ endif
 
 # Device subsystem (VNC, HEVC streaming, Tesseract OCR) is now a separate
 # plugin: nash-tool-device-control.  See ~/agents/nash-tool-device-control/
-LDFLAGS ?= $(EXPORT_DYNAMIC) -lcurl -lcrypto -lreadline $(NCURSES_LIB) -lpthread -lm -lutf8proc $(DL_LIB) $(BREW_LDFLAGS) $(ORT_LDFLAGS)
+LDFLAGS ?= $(BREW_LDFLAGS) $(EXPORT_DYNAMIC) -lcurl -lcrypto -lreadline $(NCURSES_LIB) -lpthread -lm -lutf8proc $(DL_LIB) $(ORT_LDFLAGS)
 
 # AddressSanitizer for heap corruption detection (opt-in: make SANITIZE=1)
 ifdef SANITIZE
@@ -200,7 +200,11 @@ test: $(TEST_BIN)
 TEST_CONTAINER ?= nash-test-model
 NASH_MODEL_DIR ?= $(HOME)/.nash/models/all-MiniLM-L6-v2
 test-container:
-	@if podman container exists $(TEST_CONTAINER) 2>/dev/null; then \
+	@if podman container exists $(TEST_CONTAINER) 2>/dev/null && \
+	  ! podman inspect -f '{{range .Mounts}}{{if eq .Destination "/root/.nash/models/all-MiniLM-L6-v2"}}{{.Source}}{{end}}{{end}}' $(TEST_CONTAINER) | grep -Fxq '$(NASH_MODEL_DIR)'; then \
+	  podman rm -f $(TEST_CONTAINER); \
+	fi; \
+	if podman container exists $(TEST_CONTAINER) 2>/dev/null; then \
 	  podman start $(TEST_CONTAINER) 2>/dev/null || true; \
 	else \
 	  podman run --name $(TEST_CONTAINER) -d \

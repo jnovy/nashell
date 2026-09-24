@@ -20,6 +20,7 @@
 typedef struct watch_entry {
   int fd;
   int is_dir;
+  int recursive;
   char *path;
   struct watch_entry *next;
 } watch_entry_t;
@@ -37,31 +38,59 @@ static watch_entry_t *find_watch(fswatch_t *w, const char *path) {
   return NULL;
 }
 
-static int add_watch(fswatch_t *w, const char *path, int is_dir) {
-  if (find_watch(w, path)) return 0;
+static void remove_watches_at_or_below(fswatch_t *w, const char *path) {
+  size_t path_len = strlen(path);
+  watch_entry_t **pp = &w->watches;
+  while (*pp) {
+    watch_entry_t *entry = *pp;
+    if (strcmp(entry->path, path) == 0 ||
+        (strncmp(entry->path, path, path_len) == 0 &&
+         entry->path[path_len] == '/')) {
+      *pp = entry->next;
+      close(entry->fd);
+      free(entry->path);
+      free(entry);
+    } else {
+      pp = &entry->next;
+    }
+  }
+}
+
+static int watches_same_vnode(const watch_entry_t *entry, const char *path) {
+  struct stat watched, current;
+  return fstat(entry->fd, &watched) == 0 && lstat(path, &current) == 0 &&
+         watched.st_dev == current.st_dev && watched.st_ino == current.st_ino;
+}
+
+static int add_watch(fswatch_t *w, const char *path, int is_dir, int recursive) {
+  watch_entry_t *existing = find_watch(w, path);
+  if (existing) {
+    if (watches_same_vnode(existing, path)) {
+      existing->recursive |= recursive;
+      return 0;
+    }
+    remove_watches_at_or_below(w, path);
+  }
   int fd = open(path, O_RDONLY | O_EVTONLY);
   if (fd < 0) return -1;
   struct kevent change;
-  EV_SET(&change, (uintptr_t)fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
-         NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE | NOTE_RENAME,
-         0, NULL);
-  if (kevent(w->kqfd, &change, 1, NULL, 0, NULL) < 0) {
-    close(fd);
-    return -1;
-  }
   watch_entry_t *entry = calloc(1, sizeof(*entry));
   if (!entry) { close(fd); return -1; }
   entry->path = strdup(path);
   if (!entry->path) { free(entry); close(fd); return -1; }
   entry->fd = fd;
   entry->is_dir = is_dir;
+  entry->recursive = recursive;
   entry->next = w->watches;
   w->watches = entry;
   /* Store the entry for O(1) event-to-path lookup. */
   EV_SET(&change, (uintptr_t)fd, EVFILT_VNODE, EV_ADD | EV_CLEAR,
          NOTE_WRITE | NOTE_EXTEND | NOTE_ATTRIB | NOTE_DELETE | NOTE_RENAME,
          0, entry);
-  if (kevent(w->kqfd, &change, 1, NULL, 0, NULL) < 0) return -1;
+  if (kevent(w->kqfd, &change, 1, NULL, 0, NULL) < 0) {
+    remove_watches_at_or_below(w, path);
+    return -1;
+  }
   return 0;
 }
 
@@ -70,7 +99,7 @@ static int watch_tree(fswatch_t *w, const char *path, int notify_new) {
   if (lstat(path, &st) != 0 || S_ISLNK(st.st_mode)) return 0;
   int is_dir = S_ISDIR(st.st_mode);
   int was_known = find_watch(w, path) != NULL;
-  if (add_watch(w, path, is_dir) != 0) return 0;
+  if (add_watch(w, path, is_dir, 1) != 0) return 0;
   int added = 0;
   if (notify_new && !was_known)
     w->cb(path, FSW_CREATE, w->userdata), added++;
@@ -86,6 +115,40 @@ static int watch_tree(fswatch_t *w, const char *path, int notify_new) {
     if (!child) continue;
     snprintf(child, n, "%s/%s", path, de->d_name);
     added += watch_tree(w, child, notify_new);
+    free(child);
+  }
+  closedir(dir);
+  return added;
+}
+
+/* kqueue reports a directory change without the child name.  A shallow
+ * watch scans only direct children so it can report and subsequently watch
+ * files in that directory without becoming recursive. */
+static int watch_direct_files(fswatch_t *w, const char *path, int notify_new) {
+  DIR *dir = opendir(path);
+  if (!dir) return 0;
+  int added = 0;
+  struct dirent *de;
+  while ((de = readdir(dir)) != NULL) {
+    if (strcmp(de->d_name, ".") == 0 || strcmp(de->d_name, "..") == 0)
+      continue;
+    size_t n = strlen(path) + strlen(de->d_name) + 2;
+    char *child = malloc(n);
+    if (!child) continue;
+    snprintf(child, n, "%s/%s", path, de->d_name);
+    struct stat st;
+    watch_entry_t *known = find_watch(w, child);
+    if (lstat(child, &st) == 0 && !S_ISLNK(st.st_mode)) {
+      if (!S_ISDIR(st.st_mode)) {
+        if (add_watch(w, child, 0, 0) == 0 && notify_new && !known) {
+          w->cb(child, FSW_CREATE, w->userdata);
+          added++;
+        }
+      } else if (notify_new && !known) {
+        w->cb(child, FSW_CREATE, w->userdata);
+        added++;
+      }
+    }
     free(child);
   }
   closedir(dir);
@@ -109,7 +172,7 @@ int fswatch_add(fswatch_t *w, const char *path, int recursive) {
   struct stat st;
   if (lstat(path, &st) != 0) return -1;
   if (recursive && S_ISDIR(st.st_mode)) (void)watch_tree(w, path, 0);
-  else if (add_watch(w, path, S_ISDIR(st.st_mode)) != 0) return -1;
+  else if (add_watch(w, path, S_ISDIR(st.st_mode), 0) != 0) return -1;
   return find_watch(w, path) ? 0 : -1;
 }
 
@@ -130,9 +193,18 @@ int fswatch_drain(fswatch_t *w) {
       if (events[i].fflags & NOTE_DELETE) flags |= FSW_DELETE;
       if (events[i].fflags & NOTE_RENAME) flags |= FSW_RENAME;
       if (!flags) continue;
-      if (entry->is_dir && (flags & FSW_MODIFY)) {
-        /* kqueue supplies no child name: scan only to register new paths. */
-        count += watch_tree(w, entry->path, 1);
+      if (flags & (FSW_DELETE | FSW_RENAME)) {
+        char *path = strdup(entry->path);
+        if (!path) return -1;
+        w->cb(path, flags, w->userdata);
+        count++;
+        remove_watches_at_or_below(w, path);
+        free(path);
+      } else if (entry->is_dir && (flags & FSW_MODIFY)) {
+        /* kqueue supplies no child name: scan for new paths at the watch's
+         * configured depth. */
+        count += entry->recursive ? watch_tree(w, entry->path, 1)
+                                  : watch_direct_files(w, entry->path, 1);
       } else {
         w->cb(entry->path, flags, w->userdata);
         count++;

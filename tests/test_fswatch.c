@@ -325,6 +325,64 @@ static void test_hidden_dirs_skipped(void) {
   rmrf(dir);
 }
 
+static void test_recreate_watch(void) {
+  printf("\n--- test_recreate_watch ---\n");
+  cb_state_t st = {0};
+  fswatch_t *w = fswatch_init(test_cb, &st);
+  char *dir = make_tmpdir();
+  char path[PATH_MAX];
+  snprintf(path, sizeof(path), "%s/recreated.txt", dir);
+  write_file(path, "before");
+
+  ASSERT(fswatch_add(w, path, 0) == 0, "watch initial file");
+  unlink(path);
+  wait_and_drain(w, 1000);
+  write_file(path, "after");
+  ASSERT(fswatch_add(w, path, 0) == 0, "watch recreated file");
+  st.count = 0;
+  write_file(path, "updated");
+  int n = wait_and_drain(w, 1000);
+#ifdef __APPLE__
+  ASSERT(n > 0, "events detected after recreating watched path");
+  ASSERT(strstr(st.last_path, "recreated.txt") != NULL,
+         "callback path is recreated file");
+#else
+  (void)n;
+  ASSERT(1, "recreate watch test is specific to kqueue");
+#endif
+
+  fswatch_free(w);
+  rmrf(dir);
+}
+
+static void test_nonrecursive_watch_stays_shallow(void) {
+  printf("\n--- test_nonrecursive_watch_stays_shallow ---\n");
+  cb_state_t st = {0};
+  fswatch_t *w = fswatch_init(test_cb, &st);
+  char *dir = make_tmpdir();
+  char subdir[PATH_MAX], rootfile[PATH_MAX], nested[PATH_MAX];
+  snprintf(subdir, sizeof(subdir), "%s/sub", dir);
+  snprintf(rootfile, sizeof(rootfile), "%s/root.txt", dir);
+  snprintf(nested, sizeof(nested), "%s/sub/deep.txt", dir);
+  mkdir(subdir, 0755);
+
+  ASSERT(fswatch_add(w, dir, 0) == 0, "add non-recursive directory watch");
+  write_file(rootfile, "root event");
+  wait_and_drain(w, 1000);
+  st.count = 0;
+  write_file(nested, "nested event");
+  int n = wait_and_drain(w, 250);
+#ifdef __APPLE__
+  ASSERT(n == 0, "non-recursive watch ignores nested changes");
+#else
+  (void)n;
+  ASSERT(1, "non-recursive behavior is tested by the kqueue backend");
+#endif
+
+  fswatch_free(w);
+  rmrf(dir);
+}
+
 int main(void) {
   printf("=== test_fswatch ===\n");
 
@@ -336,6 +394,8 @@ int main(void) {
   test_recursive_watch();
   test_auto_watch_new_subdir();
   test_hidden_dirs_skipped();
+  test_recreate_watch();
+  test_nonrecursive_watch_stays_shallow();
 
   printf("\n=== Results: %d passed, %d failed ===\n", g_pass, g_fail);
   return g_fail > 0 ? 1 : 0;
